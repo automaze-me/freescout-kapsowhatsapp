@@ -10,18 +10,12 @@ class AdminAccountsTest extends TestCase
 {
     protected function admin(): User
     {
-        return User::where('role', User::ROLE_ADMIN)->firstOrFail();
+        return $this->adminUser();
     }
 
     protected function nonAdmin(): User
     {
-        $user = User::where('role', '!=', User::ROLE_ADMIN)->first();
-
-        if (!$user) {
-            $this->markTestSkipped('No non-admin user in the testing database.');
-        }
-
-        return $user;
+        return $this->regularUser();
     }
 
     public function test_admin_can_view_the_settings_page()
@@ -45,12 +39,14 @@ class AdminAccountsTest extends TestCase
 
     public function test_admin_can_create_an_account()
     {
+        $mailbox = $this->testMailbox();
+
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
             'phone_number_id' => '123456789012345',
             'api_key'         => 'key-abc',
             'webhook_secret'  => 'hmac-abc',
-            'mailbox_id'      => 1,
+            'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
         ]);
 
@@ -59,18 +55,19 @@ class AdminAccountsTest extends TestCase
         $account = KapsoAccount::where('phone_number_id', '123456789012345')->first();
         $this->assertNotNull($account);
         $this->assertSame('key-abc', $account->api_key);
-        $this->assertSame(1, (int) $account->mailbox_id);
+        $this->assertSame($mailbox->id, (int) $account->mailbox_id);
     }
 
     public function test_phone_number_id_must_be_unique()
     {
         $admin = $this->admin();
+        $mailbox = $this->testMailbox();
         $payload = [
             'name'            => 'Support',
             'phone_number_id' => '555000111',
             'api_key'         => 'key',
             'webhook_secret'  => 'hmac',
-            'mailbox_id'      => 1,
+            'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
         ];
 
