@@ -1,5 +1,20 @@
 <?php
 
+// Webhook: stateless. Deliberately NOT in the 'web' group — that group applies
+// VerifyCsrfToken and StartSession, and an unauthenticated Kapso POST would 419.
+//
+// Registered before the admin group below on purpose: Laravel matches routes
+// in registration order, and the admin group's POST /kapso-whatsapp/{id}
+// wildcard would otherwise swallow POST /kapso-whatsapp/webhook (matching
+// "webhook" as {id}) and send it through the 'web,auth' middleware instead.
+Route::group([
+    'middleware' => ['bindings', \Modules\KapsoWhatsApp\Http\Middleware\KapsoSignature::class],
+    'prefix'     => \Helper::getSubdirectory(),
+    'namespace'  => 'Modules\KapsoWhatsApp\Http\Controllers',
+], function () {
+    Route::post('/kapso-whatsapp/webhook', 'WebhookController@receive')->name('kapsowhatsapp.webhook');
+});
+
 Route::group([
     'middleware' => ['web', 'auth'],
     'prefix'     => \Helper::getSubdirectory(),

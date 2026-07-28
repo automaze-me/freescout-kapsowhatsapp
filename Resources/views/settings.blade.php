@@ -6,6 +6,10 @@
 <div class="section-heading">{{ __('WhatsApp Accounts') }}</div>
 
 <div class="row-container">
+    <div class="alert alert-info">
+        {{ __('Webhook URL') }}: <code>{{ route('kapsowhatsapp.webhook') }}</code>
+    </div>
+
     <p>
         <a href="{{ route('kapsowhatsapp.create') }}" class="btn btn-primary">{{ __('Add Account') }}</a>
     </p>
