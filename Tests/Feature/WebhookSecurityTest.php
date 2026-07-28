@@ -47,14 +47,21 @@ class WebhookSecurityTest extends TestCase
         ];
     }
 
-    protected function postWebhook(array $payload, ?string $signature, string $event = 'whatsapp.message.received', array $extraHeaders = [])
+    /**
+     * The idempotency key defaults to something unique per call (not derived
+     * from the body) so tests don't cross-contaminate under a persistent cache
+     * driver: every test using the default payload would otherwise generate
+     * the identical 'idem-'.md5($body) key. Pass $idempotencyKey explicitly
+     * for the test that deliberately repeats one.
+     */
+    protected function postWebhook(array $payload, ?string $signature, string $event = 'whatsapp.message.received', array $extraHeaders = [], ?string $idempotencyKey = null)
     {
         $body = json_encode($payload);
 
         $headers = array_merge([
             'CONTENT_TYPE'            => 'application/json',
             'HTTP_X_WEBHOOK_EVENT'    => $event,
-            'HTTP_X_IDEMPOTENCY_KEY'  => 'idem-'.md5($body),
+            'HTTP_X_IDEMPOTENCY_KEY'  => $idempotencyKey ?? 'idem-'.bin2hex(random_bytes(8)),
         ], $extraHeaders);
 
         if ($signature !== null) {
@@ -164,12 +171,13 @@ class WebhookSecurityTest extends TestCase
     public function test_a_repeated_delivery_of_the_same_idempotency_key_is_skipped()
     {
         $this->makeAccount();
-        $payload = $this->payload();
+        $payload        = $this->payload();
+        $idempotencyKey = 'idem-repeat-'.md5(json_encode($payload));
 
         \Queue::fake();
 
-        $this->postWebhook($payload, $this->sign($payload))->assertStatus(200);
-        $this->postWebhook($payload, $this->sign($payload))->assertStatus(200);
+        $this->postWebhook($payload, $this->sign($payload), 'whatsapp.message.received', [], $idempotencyKey)->assertStatus(200);
+        $this->postWebhook($payload, $this->sign($payload), 'whatsapp.message.received', [], $idempotencyKey)->assertStatus(200);
 
         \Queue::assertPushed(\Modules\KapsoWhatsApp\Jobs\ProcessInboundMessage::class, 1);
     }
@@ -192,5 +200,162 @@ class WebhookSecurityTest extends TestCase
         $this->postWebhook($payload, $this->sign($payload));
 
         $this->assertNotNull($account->fresh()->last_webhook_at);
+    }
+
+    /**
+     * C1: a non-empty array/object for phone_number_id must not reach the
+     * (string) cast in KapsoAccount::findByPhoneNumberId() -- that used to
+     * raise an uncaught "Array to string conversion" ErrorException (500),
+     * with no signature required at all.
+     */
+    public function test_array_phone_number_id_is_rejected()
+    {
+        $this->makeAccount();
+
+        $body    = json_encode(['phone_number_id' => ['a' => 1]]);
+        $headers = [
+            'CONTENT_TYPE'         => 'application/json',
+            'HTTP_X_WEBHOOK_EVENT' => 'whatsapp.message.received',
+        ];
+
+        $this->call('POST', '/kapso-whatsapp/webhook', [], [], [], $headers, $body)
+            ->assertStatus(403);
+    }
+
+    /**
+     * A secret written before an APP_KEY rotation can't be decrypted.
+     * KapsoAccount::decryptOrNull() already turns that into a null rather than
+     * throwing; this asserts the middleware then correctly treats a null
+     * secret as "reject", not "crash".
+     */
+    public function test_undecryptable_secret_is_rejected()
+    {
+        $account = $this->makeAccount();
+
+        \DB::table('kapso_whatsapp_accounts')->where('id', $account->id)->update([
+            'webhook_secret' => 'not-a-validly-encrypted-payload',
+        ]);
+
+        $payload = $this->payload();
+
+        $this->postWebhook($payload, $this->sign($payload))->assertStatus(403);
+    }
+
+    public function test_scalar_json_body_is_rejected()
+    {
+        $this->makeAccount();
+
+        $body    = '123';
+        $headers = [
+            'CONTENT_TYPE'         => 'application/json',
+            'HTTP_X_WEBHOOK_EVENT' => 'whatsapp.message.received',
+        ];
+
+        $this->call('POST', '/kapso-whatsapp/webhook', [], [], [], $headers, $body)
+            ->assertStatus(403);
+    }
+
+    /**
+     * I4: the headline invariant, plus the regression it was written to catch.
+     * The idempotency key must only be committed once the job is actually
+     * queued -- otherwise a transient queue outage combined with the old
+     * "commit the key, then dispatch" ordering would cause every one of
+     * Kapso's retries to be silently swallowed and the message lost forever.
+     */
+    public function test_a_job_dispatch_failure_still_returns_200_and_does_not_burn_the_retry()
+    {
+        $this->makeAccount();
+        $payload        = $this->payload();
+        $idempotencyKey = 'idem-dispatch-failure';
+        $cacheKey       = 'kapsowhatsapp.idem.'.md5($idempotencyKey);
+
+        $failing = true;
+
+        // A closure capturing $failing by reference, so flipping $failing below
+        // changes what the already-bound dispatcher does on the next call.
+        $isFailing = function () use (&$failing) {
+            return $failing;
+        };
+
+        $this->app->bind(\Illuminate\Contracts\Bus\Dispatcher::class, function () use ($isFailing) {
+            return new class($isFailing) implements \Illuminate\Contracts\Bus\Dispatcher {
+                private $isFailing;
+
+                public function __construct(callable $isFailing)
+                {
+                    $this->isFailing = $isFailing;
+                }
+
+                public function dispatch($command)
+                {
+                    if (($this->isFailing)()) {
+                        throw new \RuntimeException('queue backend unavailable');
+                    }
+                }
+
+                public function dispatchNow($command, $handler = null)
+                {
+                    return $this->dispatch($command);
+                }
+
+                public function pipeThrough(array $pipes)
+                {
+                    return $this;
+                }
+            };
+        });
+
+        // First delivery: the queue is down. Kapso must see 200 (a 5xx counts
+        // toward the auto-pause threshold), but the key must NOT be committed.
+        $this->postWebhook($payload, $this->sign($payload), 'whatsapp.message.received', [], $idempotencyKey)
+            ->assertStatus(200);
+
+        $this->assertFalse(\Cache::has($cacheKey), 'idempotency key must not be committed when dispatch fails');
+
+        // Queue recovers; Kapso retries the exact same delivery.
+        $failing = false;
+
+        $this->postWebhook($payload, $this->sign($payload), 'whatsapp.message.received', [], $idempotencyKey)
+            ->assertStatus(200);
+
+        $this->assertTrue(\Cache::has($cacheKey), 'the retry must actually be processed, not lost');
+    }
+
+    /**
+     * I5: the existing tests build their body via json_encode(), which for
+     * this payload is a fixed point of json_encode(json_decode($body)) -- so
+     * a middleware that (wrongly) HMACs the re-encoded parsed array instead of
+     * the raw bytes would pass every one of them. This posts a hand-written
+     * raw string -- non-canonical spacing, different key order, and a
+     * non-ASCII character -- so it only passes if the raw bytes were signed.
+     */
+    public function test_signature_is_verified_over_the_exact_raw_body_not_a_reencoded_copy()
+    {
+        $this->makeAccount();
+
+        $raw = '{ "phone_number_id" : "123456789012345", "conversation" : { "id" : "conv_1", '
+            .'"phone_number_id" : "123456789012345", "kapso" : { "contact_name" : "Anna Weber" } }, '
+            .'"message" : { "kapso" : { "direction" : "inbound", "content" : "Hällo" }, '
+            .'"type" : "text", "id" : "wamid.raw1", "timestamp" : "1730092800", '
+            .'"from" : "4915112345678", "text" : { "body" : "Hällo" } }, "is_new_conversation" : true }';
+
+        // Self-check: this string must genuinely discriminate -- if it were a
+        // fixed point of re-encoding, a middleware hashing the parsed-and-
+        // reencoded array would pass too, and this test would be worthless.
+        $this->assertNotSame($raw, json_encode(json_decode($raw, true)));
+
+        $headers = [
+            'CONTENT_TYPE'             => 'application/json',
+            'HTTP_X_WEBHOOK_EVENT'     => 'whatsapp.message.received',
+            'HTTP_X_WEBHOOK_SIGNATURE' => hash_hmac('sha256', $raw, $this->secret),
+            'HTTP_X_IDEMPOTENCY_KEY'   => 'idem-raw-body-test',
+        ];
+
+        \Queue::fake();
+
+        $this->call('POST', '/kapso-whatsapp/webhook', [], [], [], $headers, $raw)
+            ->assertStatus(200);
+
+        \Queue::assertPushed(\Modules\KapsoWhatsApp\Jobs\ProcessInboundMessage::class, 1);
     }
 }
