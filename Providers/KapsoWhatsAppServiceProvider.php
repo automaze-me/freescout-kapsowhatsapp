@@ -37,5 +37,11 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
 
             return $name;
         }, 20, 2);
+
+        \Eventy::addAction('menu.manage.append', function () {
+            if (auth()->user() && auth()->user()->isAdmin()) {
+                echo view('kapsowhatsapp::menu')->render();
+            }
+        });
     }
 }
