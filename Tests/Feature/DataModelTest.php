@@ -65,4 +65,15 @@ class DataModelTest extends TestCase
         $this->assertSame(42, KapsoMessage::threadForWamid('wamid.abc'));
         $this->assertNull(KapsoMessage::threadForWamid('wamid.unknown'));
     }
+
+    public function test_unreadable_secret_decrypts_to_null_instead_of_throwing()
+    {
+        $account = $this->makeAccount();
+
+        \DB::table('kapso_whatsapp_accounts')->where('id', $account->id)->update([
+            'api_key' => 'not-valid-ciphertext',
+        ]);
+
+        $this->assertNull($account->fresh()->api_key);
+    }
 }

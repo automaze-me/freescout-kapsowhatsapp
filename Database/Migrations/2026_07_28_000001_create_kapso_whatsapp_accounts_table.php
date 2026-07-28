@@ -13,8 +13,8 @@ class CreateKapsoWhatsappAccountsTable extends Migration
             $table->string('name', 191);
             $table->string('phone_number_id', 64)->unique();
             $table->string('business_account_id', 64)->nullable();
-            $table->text('api_key');
-            $table->text('webhook_secret');
+            $table->text('api_key')->nullable();
+            $table->text('webhook_secret')->nullable();
             $table->integer('mailbox_id')->unsigned()->index();
             $table->boolean('is_active')->default(true);
             $table->timestamp('last_webhook_at')->nullable();

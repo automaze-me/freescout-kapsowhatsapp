@@ -14,7 +14,7 @@ class CreateKapsoWhatsappMessagesTable extends Migration
             $table->integer('conversation_id')->unsigned()->nullable()->index();
             $table->integer('thread_id')->unsigned()->nullable()->index();
             $table->integer('attachment_id')->unsigned()->nullable();
-            $table->string('wamid', 191)->unique();
+            $table->string('wamid', 191)->nullable()->unique();
             $table->string('kapso_conversation_id', 191)->nullable()->index();
             $table->string('direction', 16);
             $table->string('status', 32)->nullable();
