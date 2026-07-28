@@ -15,7 +15,7 @@ class CustomerResolver
      * wrong one would expose another customer's conversation history, and that
      * is a worse outcome than a duplicate an agent can merge later.
      */
-    public function resolve($e164, $contactName = null)
+    public function resolve(string $e164, ?string $contactName = null): Customer
     {
         $existing = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, $e164);
 
@@ -33,12 +33,32 @@ class CustomerResolver
     /**
      * Phones are stored as a JSON list, so matching happens in PHP after a
      * cheap LIKE prefilter rather than in SQL.
+     *
+     * The prefilter searches on the national significant number (the digits
+     * left after stripping the leading "+" and the default country code)
+     * rather than the full country-code-prefixed digit string. FreeScout
+     * stores each phone both as typed and as `Helper::phoneToNumeric()`
+     * output, which preserves leading zeros and never substitutes a country
+     * code — so a customer entered the ordinary German way ("0151
+     * 12345678") never contains the full "4915112345678" substring, but
+     * does contain "15112345678". Over-matching here is harmless: the
+     * PHP-side loop below still requires exact PhoneNumber::toE164()
+     * equality before anything links, so a broader prefilter only costs a
+     * little extra comparison work, never a wrong match.
      */
     protected function findUniqueByPhone($e164)
     {
         $bare = ltrim($e164, '+');
 
-        $candidates = Customer::where('phones', \Helper::sqlLikeOperator(), '%'.$bare.'%')->get();
+        $defaultCountryCode = PhoneNumber::DEFAULT_COUNTRY_CODE;
+
+        $national = strpos($bare, $defaultCountryCode) === 0
+            ? substr($bare, strlen($defaultCountryCode))
+            : $bare;
+
+        $needle = \Helper::sqlEscapeLike($national);
+
+        $candidates = Customer::where('phones', \Helper::sqlLikeOperator(), '%'.$needle.'%')->get();
 
         $matches = $candidates->filter(function ($customer) use ($e164) {
             foreach ($customer->getPhones() as $phone) {

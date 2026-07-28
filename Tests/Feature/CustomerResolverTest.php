@@ -32,6 +32,26 @@ class CustomerResolverTest extends TestCase
         $this->assertSame('+4915100000002', $resolved->getChannelId(KapsoAccount::CHANNEL));
     }
 
+    public function test_unique_phone_match_finds_a_customer_stored_in_national_format()
+    {
+        // The ordinary way a German customer's number gets typed into
+        // FreeScout: national format with a leading trunk zero, not E.164.
+        // Helper::phoneToNumeric() preserves that leading zero and never
+        // substitutes a country code, so the prefilter must search on the
+        // national significant number, not the full country-code-prefixed
+        // digit string, or this customer is invisible to it.
+        $customer = Customer::createWithoutEmail(['first_name' => 'Frieda', 'last_name' => 'National']);
+        $customer->setPhones([['value' => '0151 12345678', 'type' => 1]]);
+        $customer->save();
+
+        $resolved = (new CustomerResolver())->resolve('+4915112345678', null);
+
+        $this->assertSame($customer->id, $resolved->id);
+        $this->assertSame('+4915112345678', $resolved->getChannelId(KapsoAccount::CHANNEL));
+        $this->assertSame(1, Customer::where('first_name', 'Frieda')->count(),
+            'must link to the existing customer rather than creating a duplicate');
+    }
+
     public function test_ambiguous_phone_creates_a_new_customer_rather_than_guessing()
     {
         $existingIds = [];
