@@ -1,0 +1,20 @@
+{
+    "name": "KapsoWhatsApp",
+    "alias": "kapsowhatsapp",
+    "description": "WhatsApp as a communication channel for FreeScout, via the Kapso API.",
+    "version": "0.1.0",
+    "detailsUrl": "https://github.com/automaze-me/freescout-kapsowhatsapp",
+    "author": "automaze.me",
+    "authorUrl": "https://automaze.me",
+    "requiredAppVersion": "1.8.128",
+    "active": 1,
+    "order": 0,
+    "providers": [
+        "Modules\\KapsoWhatsApp\\Providers\\KapsoWhatsAppServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": []
+}

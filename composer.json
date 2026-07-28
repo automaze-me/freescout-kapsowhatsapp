@@ -1,0 +1,25 @@
+{
+    "name": "automaze-me/freescout-kapsowhatsapp",
+    "description": "WhatsApp as a communication channel for FreeScout, via the Kapso API.",
+    "authors": [
+        {
+            "name": "Jörn Bungartz - automaze.me",
+            "homepage": "https://automaze.me"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Modules\\KapsoWhatsApp\\Providers\\KapsoWhatsAppServiceProvider"
+            ],
+            "aliases": {
+                
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\KapsoWhatsApp\\": ""
+        }
+    }
+}
