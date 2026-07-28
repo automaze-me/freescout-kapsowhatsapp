@@ -6,12 +6,6 @@ use Illuminate\Support\ServiceProvider;
 
 class KapsoWhatsAppServiceProvider extends ServiceProvider
 {
-    /**
-     * Community channel code. 100 and 101 are claimed by the MetaWhatsApp module.
-     */
-    const CHANNEL = 102;
-    const CHANNEL_NAME = 'WhatsApp';
-
     public function boot()
     {
         $this->loadViewsFrom(__DIR__.'/../Resources/views', 'kapsowhatsapp');
@@ -29,15 +23,16 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
     {
         // Make WhatsApp selectable as a communication channel.
         \Eventy::addFilter('channels.list', function ($channels) {
-            $channels[self::CHANNEL] = self::CHANNEL_NAME;
+            $channels[\Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL]
+                = \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL_NAME;
 
             return $channels;
         }, 20, 1);
 
         // Channel code -> display name (used by CustomerChannel::getChannelName()).
         \Eventy::addFilter('channel.name', function ($name, $channel = null) {
-            if ((int) $channel === self::CHANNEL) {
-                return self::CHANNEL_NAME;
+            if ((int) $channel === \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL) {
+                return \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL_NAME;
             }
 
             return $name;
