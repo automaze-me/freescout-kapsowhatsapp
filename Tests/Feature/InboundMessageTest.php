@@ -212,7 +212,7 @@ class InboundMessageTest extends TestCase
         $this->assertStringContainsString('&lt;b&gt;bold&lt;/b&gt;', $thread->body);
     }
 
-    public function test_subject_is_built_from_raw_text_not_html_escaped_text()
+    public function test_subject_and_preview_are_built_from_raw_text_not_html_escaped_text()
     {
         $account = $this->makeAccount();
 
@@ -227,6 +227,10 @@ class InboundMessageTest extends TestCase
         $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
 
         $this->assertSame("Hi, I can't log in & reset", $conversation->subject);
+        // Regression guard for the same bug relocated: Helper::textPreview()
+        // strips tags but never decodes HTML entities, so a preview built
+        // from the escaped body would show literal "&amp;"/"&#039;".
+        $this->assertSame("Hi, I can't log in & reset", $conversation->preview);
     }
 
     public function test_append_reactivates_a_pending_conversation_and_updates_its_state()
@@ -260,5 +264,77 @@ class InboundMessageTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame($unassignedFolder->id, $conversation->folder_id);
+    }
+
+    /**
+     * The test suite uses DatabaseTransactions, so a real post-commit retry
+     * can't be observed here — instead this directly recreates the state a
+     * crashed/threw-before-dispatch retry would find: a KapsoMessage row
+     * that exists (so the early-return-on-seen path is taken) but whose
+     * events_dispatched_at marker is NULL (so the events were never
+     * confirmed fired).
+     */
+    public function test_events_fire_exactly_once_when_the_marker_is_nulled_and_the_job_reruns()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $kapsoMessage = KapsoMessage::where('wamid', 'wamid.in.1')->firstOrFail();
+        $this->assertNotNull($kapsoMessage->events_dispatched_at);
+
+        // events_dispatched_at is deliberately excluded from $fillable, so a
+        // direct DB write is the only way to null it back out.
+        \DB::table('kapso_whatsapp_messages')->where('id', $kapsoMessage->id)
+            ->update(['events_dispatched_at' => null]);
+
+        \Event::fake([CustomerCreatedConversation::class, CustomerReplied::class]);
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        \Event::assertDispatchedTimes(CustomerCreatedConversation::class, 1);
+        \Event::assertNotDispatched(CustomerReplied::class);
+
+        $this->assertNotNull(KapsoMessage::find($kapsoMessage->id)->events_dispatched_at);
+    }
+
+    public function test_a_fully_processed_message_dispatches_nothing_on_rerun()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        \Event::fake([CustomerCreatedConversation::class, CustomerReplied::class]);
+
+        // Same wamid: hits the early-return-on-seen path, whose
+        // events_dispatched_at is already set from the run above.
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        \Event::assertNotDispatched(CustomerCreatedConversation::class);
+        \Event::assertNotDispatched(CustomerReplied::class);
+    }
+
+    public function test_a_throwing_listener_does_not_prevent_the_marker_from_being_set()
+    {
+        $account = $this->makeAccount();
+
+        \Event::listen(CustomerCreatedConversation::class, function () {
+            throw new \RuntimeException('listener boom');
+        });
+
+        // Must not throw: dispatchPendingEvents() wraps the event()/Eventy
+        // dispatch in try/catch so a throwing listener cannot fail this job
+        // and drive a queue retry that re-enters and re-fires everything.
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $kapsoMessage = KapsoMessage::where('wamid', 'wamid.in.1')->firstOrFail();
+        $this->assertNotNull($kapsoMessage->events_dispatched_at);
+
+        // Simulate what a queue retry after that "failure" would do:
+        // re-entering must not fire the event again now that the atomic
+        // claim has already been taken.
+        \Event::fake([CustomerCreatedConversation::class]);
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+        \Event::assertNotDispatched(CustomerCreatedConversation::class);
     }
 }

@@ -17,9 +17,8 @@ class KapsoMessage extends Model
     ];
 
     /**
-     * Without this, assigning a Carbon instance (see markEventsDispatched())
-     * to a column Eloquent doesn't know is a date would store the raw object
-     * instead of a DB-storable datetime string.
+     * Without this, reading `events_dispatched_at` back off the model would
+     * yield a raw string instead of a Carbon instance.
      */
     protected $dates = ['events_dispatched_at'];
 
@@ -59,18 +58,15 @@ class KapsoMessage extends Model
     /**
      * Whether the core FreeScout events (CustomerCreatedConversation /
      * CustomerReplied and the matching Eventy hooks) have been confirmed
-     * dispatched for this message. `events_dispatched_at` is intentionally
-     * excluded from `$fillable` — it is set only via `markEventsDispatched()`,
-     * never via mass assignment.
+     * dispatched for this (inbound-only) message. `events_dispatched_at` is
+     * intentionally excluded from `$fillable` — the only writer is the
+     * atomic `UPDATE ... WHERE events_dispatched_at IS NULL` claim in
+     * `ProcessInboundMessage::dispatchPendingEvents()`, never mass
+     * assignment or a read-then-`save()` pattern, which would not be safe
+     * against concurrent workers or retry-after-listener-throw.
      */
     public function eventsDispatched(): bool
     {
         return (bool) $this->events_dispatched_at;
-    }
-
-    public function markEventsDispatched(): void
-    {
-        $this->events_dispatched_at = now();
-        $this->save();
     }
 }

@@ -131,14 +131,23 @@ class ProcessInboundMessage implements ShouldQueue
                     'contact_phone'         => $e164,
                 ]);
 
+                // Match core's ordering (Thread.php:1170/1227, FetchEmails.php:1246-1247/1318):
+                // last_reply_at, last_reply_from and the preview are set on the
+                // conversation *before* the Eventy filter runs, so a filter
+                // inspecting those fields sees the up-to-date values instead of
+                // stale ones. setPreview() takes the raw text, not the
+                // HTML-escaped body — Helper::textPreview() strips tags but never
+                // decodes entities, so an escaped body would leave literal
+                // "&amp;"/"&#039;" in the conversation list.
+                $conversation->last_reply_at   = now();
+                $conversation->last_reply_from = Conversation::PERSON_CUSTOMER;
+                $conversation->setPreview($body['raw']);
+
                 $conversation = \Eventy::filter(
                     $isNew ? 'conversation.created_by_customer' : 'conversation.customer_replied',
                     $conversation, $thread, $customer
                 );
 
-                $conversation->last_reply_at   = now();
-                $conversation->last_reply_from = Conversation::PERSON_CUSTOMER;
-                $conversation->setPreview($body['html']);
                 $conversation->save();
             });
         } catch (\Illuminate\Database\QueryException $e) {
@@ -167,18 +176,37 @@ class ProcessInboundMessage implements ShouldQueue
 
     /**
      * Fires the core Laravel events and Eventy hooks exactly once per
-     * message, even across retries. `events_dispatched_at` is the source of
-     * truth: a row without it means the conversation/thread/dedupe write
-     * committed but the events were never confirmed dispatched (a listener
-     * threw, or the worker died between commit and dispatch) — the
-     * early-return-on-seen path above must not silently swallow that. A row
-     * with it already set is a genuine duplicate delivery and this is a
-     * no-op.
+     * message, even across retries and concurrent workers. `events_dispatched_at`
+     * is inbound-only and is claimed atomically: the `UPDATE ... WHERE
+     * events_dispatched_at IS NULL` below is the only place the column is
+     * written, and it is a compare-and-set — only the worker whose UPDATE
+     * actually matches a row may dispatch. This closes two duplicate-fire
+     * paths a plain read-then-write would leave open: (1) the race-recovery
+     * `catch` block calling this for a message whose *winning* job has
+     * committed but not yet reached its own dispatch call (marker still NULL
+     * at that moment), and (2) a throwing listener causing the job to retry
+     * — without the atomic claim, a NULL marker would look identical to
+     * "never attempted" on every retry and re-fire everything each time.
+     * A row that already has the marker set (genuine duplicate delivery, or
+     * already claimed by another worker) makes the UPDATE affect 0 rows and
+     * this is a no-op.
      */
     protected function dispatchPendingEvents(KapsoMessage $kapsoMessage)
     {
-        if ($kapsoMessage->eventsDispatched()) {
+        // events_dispatched_at is inbound-only: `kapso_whatsapp_messages` also
+        // holds outbound rows (written by ReconcileOutboundMessage), whose
+        // marker is always NULL. Without this guard, a future caller could
+        // fire CustomerReplied for an agent-sent message.
+        if ($kapsoMessage->direction !== KapsoMessage::DIRECTION_INBOUND) {
             return;
+        }
+
+        $claimed = KapsoMessage::where('id', $kapsoMessage->id)
+            ->whereNull('events_dispatched_at')
+            ->update(['events_dispatched_at' => now()]);
+
+        if (!$claimed) {
+            return; // another worker already owns these events
         }
 
         $thread       = $kapsoMessage->thread_id ? Thread::find($kapsoMessage->thread_id) : null;
@@ -192,27 +220,36 @@ class ProcessInboundMessage implements ShouldQueue
 
         // Inbound over a webhook bypasses the mail-fetch pipeline, so
         // nothing else raises these. Without them, notifications, workflows
-        // and auto-replies silently never run.
-        if ($thread->first) {
-            event(new CustomerCreatedConversation($conversation, $thread));
-            \Eventy::action('conversation.created_by_customer', $conversation, $thread, $customer);
-        } else {
-            event(new CustomerReplied($conversation, $thread));
-            \Eventy::action('conversation.customer_replied', $conversation, $thread, $customer);
+        // and auto-replies silently never run. The claim above has already
+        // been committed, so a throwing listener (FreeScout's own listeners
+        // for these events are synchronous) must not be allowed to fail this
+        // job and drive a retry that re-enters and re-fires everything.
+        try {
+            if ($thread->first) {
+                event(new CustomerCreatedConversation($conversation, $thread));
+                \Eventy::action('conversation.created_by_customer', $conversation, $thread, $customer);
+            } else {
+                event(new CustomerReplied($conversation, $thread));
+                \Eventy::action('conversation.customer_replied', $conversation, $thread, $customer);
+            }
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] A listener threw while dispatching events for message id '.$kapsoMessage->id, [
+                'exception' => $e,
+            ]);
         }
-
-        $kapsoMessage->markEventsDispatched();
     }
 
     /**
      * Prefer the typed text; fall back to Kapso's rendered representation so
      * unsupported types (location, contacts, interactive) still carry
      * content. Returns both the raw text and the HTML-escaped body:
-     * `Conversation::subjectFromText()` only strips tags — it never decodes
-     * HTML entities — so building the subject from an already-escaped body
-     * would leave literal "&amp;"/"&#039;" in conversation subjects and
-     * email notification headers. The thread body and preview, on the other
-     * hand, must stay escaped: the text is attacker-controlled.
+     * `Conversation::subjectFromText()` and `Conversation::setPreview()` only
+     * strip tags — they never decode HTML entities — so building the subject
+     * or preview from an already-escaped body would leave literal
+     * "&amp;"/"&#039;" in conversation subjects, previews and email
+     * notification headers. The thread body, on the other hand, must stay
+     * escaped: the text is attacker-controlled and is rendered unescaped in
+     * the conversation view.
      */
     protected function body(array $message)
     {
