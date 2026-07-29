@@ -325,6 +325,43 @@ class WebhookAdminActionsTest extends TestCase
     }
 
     /**
+     * Since the module registers its own webhook, nothing is ever copied by
+     * hand any more -- so a healthy settings page has no reason to display
+     * the webhook URL at all.
+     */
+    public function test_the_settings_page_does_not_show_the_webhook_url_when_it_is_reachable()
+    {
+        config(['app.url' => 'https://help.example.com']);
+        $this->fakeResponses([]);
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('https://help.example.com', \Modules\KapsoWhatsApp\Services\WebhookRegistrar::webhookUrl(), 'precondition: the config override must reach webhookUrl()');
+        $this->assertStringNotContainsString('/kapso-whatsapp/webhook', $html);
+    }
+
+    /**
+     * The one place the URL still appears is the unreachable-address warning,
+     * which has to name the address it is warning about.
+     */
+    public function test_the_unreachable_warning_names_the_webhook_url()
+    {
+        config(['app.url' => 'http://localhost:8090']);
+        $this->fakeResponses([]);
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('cannot reach', $html);
+        $this->assertStringContainsString('http://localhost:8090/kapso-whatsapp/webhook', $html);
+    }
+
+    /**
      * Kapso being unreachable must degrade to a message on the page, never to
      * an unusable settings screen.
      */

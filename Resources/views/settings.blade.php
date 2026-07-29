@@ -35,13 +35,13 @@
                 <div class="alert alert-warning">{{ __('Add your Kapso API key above before adding a WhatsApp number.') }}</div>
             @endif
 
-            <div class="alert alert-info">
-                {{ __('Webhook URL') }}: <code>{{ $webhookUrl }}</code>
-            </div>
-
+            {{-- The webhook URL itself is deliberately not shown when healthy: since the
+                 module registers its own webhook, nothing is ever copied by hand any more.
+                 It only appears inside this warning, which has to name the address it is
+                 warning about. --}}
             @if ($webhookUrlUnreachable)
             <div class="alert alert-warning">
-                {{ __('Kapso delivers webhooks from the public internet and cannot reach this address. Registration will succeed, but no WhatsApp message will ever arrive until FreeScout is reachable at a public URL.') }}
+                {{ __('Kapso delivers webhooks from the public internet and cannot reach this install\'s address (:url). Registration will succeed, but no WhatsApp message will ever arrive until FreeScout is reachable at a public URL.', ['url' => $webhookUrl]) }}
             </div>
             @endif
 
