@@ -145,14 +145,14 @@ class WebhookAdminActionsTest extends TestCase
     }
 
     /**
-     * The bug this fixes: recordWebhookError() used to stamp
+     * The bug this protects: recordWebhookError() used to stamp
      * webhook_checked_at on every failure, including this one. A failed
      * check is not a check -- stamping it made refreshStaleWebhookStatus()
-     * skip the very recheck that could correct a wrong diagnosis on the next
-     * settings-page load, so an admin hitting a transient error could loop
-     * on it forever.
+     * treat a transient failure as freshly-learned state, so a wrong
+     * diagnosis could stick with no way for the next page load to
+     * self-correct it.
      */
-    public function test_a_failed_resume_does_not_block_the_settings_page_from_rechecking()
+    public function test_a_failed_resume_does_not_make_the_status_look_freshly_known()
     {
         $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
 
@@ -170,18 +170,41 @@ class WebhookAdminActionsTest extends TestCase
 
         $account = $account->fresh();
         $this->assertNotNull($account->webhook_error);
-        $this->assertSame($staleTimestamp, $account->webhook_checked_at->timestamp, 'a failed check must not stamp webhook_checked_at');
+        $this->assertSame($staleTimestamp, $account->webhook_checked_at->timestamp, 'a failed check must not stamp webhook_checked_at -- it never learned the current state');
+    }
 
-        // Now prove the settings page actually issues a fresh check rather
-        // than skipping it as "already checked recently".
-        $this->fakeResponses([
-            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true]])),
-        ]);
+    /**
+     * The other half of that same fix, and the property that regressed when
+     * webhook_checked_at stopped being stamped on failure: without a
+     * separate attempted-at marker, a Kapso that keeps failing (degraded,
+     * not fully down) would be re-called on every single settings-page load
+     * with no backoff at all -- N accounts costing N outbound calls, each up
+     * to connect_timeout + timeout, on every load, for as long as Kapso stays
+     * unwell. A failed attempt must still count against the outbound call
+     * budget even though it does not count as knowledge.
+     */
+    public function test_a_failed_check_suppresses_the_next_outbound_call_from_the_settings_page()
+    {
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = false;
+        $account->webhook_checked_at = now()->subHour();
+        $account->save();
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]))
+            ->assertStatus(302)
+            ->assertSessionHas('flash_error_floating');
+
+        // Nothing queued: any outbound call here would fail the test with an
+        // "empty mock queue" error rather than silently passing.
+        $this->fakeResponses([]);
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
 
-        $this->assertCount(1, $this->history, 'the settings page must issue a fresh check, not skip it');
-        $this->assertTrue($account->fresh()->webhook_active);
+        $this->assertCount(0, $this->history, 'a check attempted moments ago -- even a failed one -- must not be retried immediately');
     }
 
     public function test_an_admin_can_refresh_the_status()
@@ -277,10 +300,11 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account                     = $this->makeAccount();
-        $account->webhook_id         = 'wh-1';
-        $account->webhook_active     = true;
-        $account->webhook_checked_at = now();
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = true;
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
         $account->save();
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
@@ -325,11 +349,12 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account                     = $this->makeAccount();
-        $account->webhook_id         = 'wh-1';
-        $account->webhook_active     = false;
-        $account->webhook_checked_at = now();
-        $account->webhook_error      = 'Kapso has paused this webhook after failed deliveries.';
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = false;
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
+        $account->webhook_error              = 'Kapso has paused this webhook after failed deliveries.';
         $account->save();
 
         $html = $this->actingAs($this->adminUser())
@@ -345,10 +370,11 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account                     = $this->makeAccount();
-        $account->webhook_id         = 'wh-1';
-        $account->webhook_active     = true;
-        $account->webhook_checked_at = now();
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = true;
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
         $account->save();
 
         $html = $this->actingAs($this->adminUser())
@@ -370,10 +396,11 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account                     = $this->makeAccount();
-        $account->webhook_id         = 'wh-1';
-        $account->webhook_active     = null;
-        $account->webhook_checked_at = now();
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = null;
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
         $account->save();
 
         $html = $this->actingAs($this->adminUser())
@@ -390,11 +417,12 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account                     = $this->makeAccount();
-        $account->webhook_id         = 'wh-1';
-        $account->webhook_active     = true;
-        $account->webhook_url        = 'https://old.example.com/kapso-whatsapp/webhook';
-        $account->webhook_checked_at = now();
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = true;
+        $account->webhook_url                = 'https://old.example.com/kapso-whatsapp/webhook';
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
         $account->save();
 
         $html = $this->actingAs($this->adminUser())

@@ -51,8 +51,14 @@ class KapsoWhatsAppController extends Controller
     /**
      * Kapso pauses a webhook after a run of failures and never resumes it, so
      * the pause has to become visible without anyone clicking anything. Only
-     * registered accounts are checked, and only when the last reading has gone
-     * stale, so this is at most one round trip per account per few minutes.
+     * registered accounts are checked, and only when the last *attempt* has
+     * gone stale, so this is at most one round trip per account per few
+     * minutes -- deliberately gated on webhook_check_attempted_at rather than
+     * webhook_checked_at: a failing Kapso must still be throttled even though
+     * a failed attempt never moves webhook_checked_at (see
+     * recordWebhookError()). Gating on the "did we learn anything" timestamp
+     * instead would mean a Kapso that is merely slow, not down, gets called
+     * again on every single page load, for as long as it stays unwell.
      * A KapsoApiException records the error on the row so it shows up next to
      * the account; the generic catch below is a last-resort guard that only
      * logs, so an unexpected internal error cannot take the settings page
@@ -67,8 +73,8 @@ class KapsoWhatsAppController extends Controller
             return;
         }
 
-        if ($account->webhook_checked_at
-            && $account->webhook_checked_at->gt(now()->subMinutes(WebhookRegistrar::STALE_AFTER_MINUTES))) {
+        if ($account->webhook_check_attempted_at
+            && $account->webhook_check_attempted_at->gt(now()->subMinutes(WebhookRegistrar::STALE_AFTER_MINUTES))) {
             return;
         }
 
@@ -232,10 +238,16 @@ class KapsoWhatsAppController extends Controller
      * hitting a spurious error could loop on it forever. Leaving the old
      * timestamp alone means the next settings-page load tries again for
      * real.
+     *
+     * It DOES stamp webhook_check_attempted_at, which is the separate job
+     * webhook_checked_at used to (wrongly) do double duty for: without it, a
+     * Kapso that keeps failing -- degraded rather than fully down -- would be
+     * re-called on every single settings-page load with no backoff at all.
      */
     protected function recordWebhookError(KapsoAccount $account, KapsoApiException $e)
     {
-        $account->webhook_error = $e->getMessage();
+        $account->webhook_error              = $e->getMessage();
+        $account->webhook_check_attempted_at = now();
         $account->save();
     }
 

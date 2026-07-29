@@ -20,7 +20,7 @@ class KapsoAccount extends Model
         'webhook_active' => 'boolean',
     ];
 
-    protected $dates = ['last_webhook_at', 'webhook_checked_at'];
+    protected $dates = ['last_webhook_at', 'webhook_checked_at', 'webhook_check_attempted_at'];
 
     public function mailbox()
     {

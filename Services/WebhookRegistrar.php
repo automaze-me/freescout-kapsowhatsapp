@@ -28,9 +28,12 @@ class WebhookRegistrar
     const PAYLOAD_VERSION = 'v2';
 
     /**
-     * How old a status reading may be before the settings page refreshes it.
-     * Low enough that a paused webhook surfaces on the next visit, high enough
-     * that reloading the page is not one HTTP round trip per account.
+     * How long since the last attempt (successful or not -- see
+     * webhook_check_attempted_at) before the settings page will try Kapso
+     * again for a given account. Low enough that a paused webhook surfaces on
+     * the next visit, high enough that reloading the page is not one HTTP
+     * round trip per account -- and, when Kapso itself is slow or down, not
+     * one multi-second timeout per account either.
      */
     const STALE_AFTER_MINUTES = 5;
 
@@ -136,9 +139,10 @@ class WebhookRegistrar
         // that omits `active` (e.g. an empty body from a 204) tells us
         // nothing about the current state -- optimistically writing true
         // would claim knowledge we don't have.
-        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : null;
-        $this->account->webhook_checked_at = now();
-        $this->account->webhook_error      = null;
+        $this->account->webhook_active             = isset($webhook['active']) ? (bool) $webhook['active'] : null;
+        $this->account->webhook_checked_at         = now();
+        $this->account->webhook_check_attempted_at = now();
+        $this->account->webhook_error              = null;
         $this->account->save();
 
         return $webhook;
@@ -168,10 +172,11 @@ class WebhookRegistrar
 
         $active = isset($webhook['active']) ? (bool) $webhook['active'] : null;
 
-        $this->account->webhook_active     = $active;
-        $this->account->webhook_url        = isset($webhook['url']) ? self::truncateUrl($webhook['url']) : $this->account->webhook_url;
-        $this->account->webhook_checked_at = now();
-        $this->account->webhook_error      = $active === false ? $this->pauseReason() : null;
+        $this->account->webhook_active             = $active;
+        $this->account->webhook_url                = isset($webhook['url']) ? self::truncateUrl($webhook['url']) : $this->account->webhook_url;
+        $this->account->webhook_checked_at         = now();
+        $this->account->webhook_check_attempted_at = now();
+        $this->account->webhook_error              = $active === false ? $this->pauseReason() : null;
         $this->account->save();
 
         return $webhook;
@@ -209,9 +214,10 @@ class WebhookRegistrar
         // empty body from a 204) tells us nothing about the current state --
         // writing true here would claim knowledge we don't have, even though
         // we just asked Kapso to set it.
-        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : null;
-        $this->account->webhook_checked_at = now();
-        $this->account->webhook_error      = null;
+        $this->account->webhook_active             = isset($webhook['active']) ? (bool) $webhook['active'] : null;
+        $this->account->webhook_checked_at         = now();
+        $this->account->webhook_check_attempted_at = now();
+        $this->account->webhook_error              = null;
         $this->account->save();
 
         return $webhook;
@@ -229,10 +235,11 @@ class WebhookRegistrar
      */
     protected function markWebhookGone()
     {
-        $this->account->webhook_id         = null;
-        $this->account->webhook_active     = null;
-        $this->account->webhook_checked_at = now();
-        $this->account->webhook_error      = __('The webhook this module registered no longer exists in Kapso. Register it again.');
+        $this->account->webhook_id                 = null;
+        $this->account->webhook_active             = null;
+        $this->account->webhook_checked_at         = now();
+        $this->account->webhook_check_attempted_at = now();
+        $this->account->webhook_error              = __('The webhook this module registered no longer exists in Kapso. Register it again.');
         $this->account->save();
     }
 
