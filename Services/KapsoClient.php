@@ -11,6 +11,15 @@ class KapsoClient
 {
     const PLATFORM_BASE = 'https://api.kapso.ai/platform/v1';
 
+    /**
+     * Kapso pages the phone-numbers endpoint (default 20), so a project with
+     * more numbers than one page would otherwise present the admin with a
+     * silently truncated list. NUMBERS_PAGE_CAP bounds the loop against a
+     * server that keeps answering with a full page.
+     */
+    const NUMBERS_PER_PAGE = 100;
+    const NUMBERS_PAGE_CAP = 10;
+
     protected $account;
     protected $client;
 
@@ -144,6 +153,29 @@ class KapsoClient
             'errors_only' => 'true',
             'limit'       => $limit,
         ]));
+    }
+
+    /**
+     * Every WhatsApp number in the project this API key belongs to.
+     */
+    public function listPhoneNumbers()
+    {
+        $numbers = [];
+
+        for ($page = 1; $page <= self::NUMBERS_PAGE_CAP; $page++) {
+            $batch = $this->dataList($this->platformRequest('GET', '/whatsapp/phone_numbers', null, [
+                'per_page' => self::NUMBERS_PER_PAGE,
+                'page'     => $page,
+            ]));
+
+            $numbers = array_merge($numbers, $batch);
+
+            if (count($batch) < self::NUMBERS_PER_PAGE) {
+                break;
+            }
+        }
+
+        return $numbers;
     }
 
     protected function webhooksPath()

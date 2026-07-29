@@ -215,4 +215,61 @@ class KapsoClientPlatformTest extends TestCase
 
         $this->assertCount(1, $history);
     }
+
+    public function test_listing_phone_numbers_requests_a_full_page_and_returns_the_records()
+    {
+        $history = [];
+        $client  = $this->clientWithHistory([
+            new Response(200, [], json_encode(['data' => [['phone_number_id' => '111']]])),
+        ], $history);
+
+        $numbers = (new KapsoClient($this->account(), $client))->listPhoneNumbers();
+
+        $this->assertSame([['phone_number_id' => '111']], $numbers);
+
+        $request = $history[0]['request'];
+        $this->assertSame('GET', $request->getMethod());
+        $this->assertSame(
+            'https://api.kapso.ai/platform/v1/whatsapp/phone_numbers',
+            (string) $request->getUri()->withQuery('')
+        );
+        $this->assertStringContainsString('per_page=100', $request->getUri()->getQuery());
+    }
+
+    /**
+     * Kapso pages this endpoint at 20 by default; a project with more numbers
+     * than one page must not silently show a truncated list.
+     */
+    public function test_listing_phone_numbers_follows_pagination()
+    {
+        $full = array_map(function ($i) {
+            return ['phone_number_id' => (string) $i];
+        }, range(1, 100));
+
+        $history = [];
+        $client  = $this->clientWithHistory([
+            new Response(200, [], json_encode(['data' => $full])),
+            new Response(200, [], json_encode(['data' => [['phone_number_id' => '101']]])),
+        ], $history);
+
+        $numbers = (new KapsoClient($this->account(), $client))->listPhoneNumbers();
+
+        $this->assertCount(101, $numbers);
+        $this->assertCount(2, $history);
+        $this->assertStringContainsString('page=2', $history[1]['request']->getUri()->getQuery());
+    }
+
+    public function test_listing_phone_numbers_stops_at_the_page_cap()
+    {
+        $full = array_map(function ($i) {
+            return ['phone_number_id' => (string) $i];
+        }, range(1, 100));
+
+        $history = [];
+        $client  = $this->clientWithHistory(array_fill(0, 12, new Response(200, [], json_encode(['data' => $full]))), $history);
+
+        (new KapsoClient($this->account(), $client))->listPhoneNumbers();
+
+        $this->assertLessThanOrEqual(10, count($history), 'a server that always returns a full page must not loop forever');
+    }
 }
