@@ -11,6 +11,7 @@ use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
 use Modules\KapsoWhatsApp\Services\Settings;
+use Modules\KapsoWhatsApp\Services\WebhookRegistrar;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class AdminAccountsTest extends TestCase
@@ -57,6 +58,22 @@ class AdminAccountsTest extends TestCase
     }
 
     /**
+     * store() now registers the new account's webhook right after saving it
+     * (findOwnWebhook()'s list, then a create), so any test whose fake queue
+     * reaches applyCreateRequest() successfully needs these two more queued
+     * after its numbersResponse().
+     */
+    protected function webhookRegistrationResponses(string $webhookId = 'wh-created'): array
+    {
+        $url = WebhookRegistrar::webhookUrl();
+
+        return [
+            new Response(200, [], json_encode(['data' => []])),
+            new Response(201, [], json_encode(['data' => ['id' => $webhookId, 'active' => true, 'url' => $url]])),
+        ];
+    }
+
+    /**
      * webhook_secret is intentionally not $fillable, so fixtures set it via
      * direct property assignment, same as DataModelTest.
      */
@@ -97,12 +114,19 @@ class AdminAccountsTest extends TestCase
         $this->get(route('kapsowhatsapp.settings'))->assertStatus(302);
     }
 
+    /**
+     * The manual "Register with Kapso" step is gone: creating an account now
+     * registers its webhook automatically as part of store().
+     */
     public function test_admin_can_create_an_account()
     {
         $mailbox = $this->testMailbox();
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => '123456789012345', 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse([
+                ['phone_number_id' => '123456789012345', 'business_account_id' => 'waba-1'],
+            ])],
+            $this->webhookRegistrationResponses('wh-created-1')
+        ));
 
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
@@ -111,11 +135,52 @@ class AdminAccountsTest extends TestCase
             'is_active'       => 1,
         ]);
 
-        $response->assertStatus(302);
+        $response->assertStatus(302)->assertSessionHas('flash_success_floating');
+        $this->assertStringContainsString('Webhook registered', session('flash_success_floating'));
 
         $account = KapsoAccount::where('phone_number_id', '123456789012345')->first();
         $this->assertNotNull($account);
         $this->assertSame($mailbox->id, (int) $account->mailbox_id);
+        $this->assertSame('wh-created-1', $account->webhook_id, 'creating an account must register its webhook automatically');
+    }
+
+    /**
+     * A Kapso outage at registration time must not lose the account: it is
+     * already saved by the time register() is attempted, and the row must
+     * say why the webhook isn't registered yet rather than the create
+     * silently failing or 500ing.
+     */
+    public function test_creating_an_account_while_kapso_is_down_still_saves_it()
+    {
+        $mailbox = $this->testMailbox();
+        $this->fakeResponses([
+            $this->numbersResponse([
+                ['phone_number_id' => '123456789099999', 'business_account_id' => 'waba-1'],
+            ]),
+            new Response(500, [], json_encode(['error' => 'boom'])), // register()'s own list call fails
+        ]);
+
+        $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
+            'name'            => 'Support',
+            'phone_number_id' => '123456789099999',
+            'mailbox_id'      => $mailbox->id,
+            'is_active'       => 1,
+        ]);
+
+        $response->assertStatus(302)->assertSessionHas('flash_error_floating');
+        $this->assertStringContainsString('retried automatically', session('flash_error_floating'));
+
+        $account = KapsoAccount::where('phone_number_id', '123456789099999')->first();
+        $this->assertNotNull($account, 'the account must be saved even though registration failed');
+        $this->assertNull($account->webhook_id);
+        $this->assertNotNull($account->webhook_error);
+        $this->assertNotNull($account->webhook_check_attempted_at, 'a failed attempt must still stamp the throttle');
+
+        // The settings page must still render afterwards, and the attempt
+        // just stamped above must stop it from immediately retrying Kapso.
+        $this->fakeResponses([]);
+        $this->actingAs($this->admin())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+        $this->assertCount(0, $this->history, 'a check attempted moments ago must not be retried immediately');
     }
 
     public function test_phone_number_id_must_be_unique()
@@ -131,9 +196,12 @@ class AdminAccountsTest extends TestCase
 
         // Only the first POST reaches Kapso: the second is rejected by the
         // uniqueness rule before applyCreateRequest() ever calls availableNumbers().
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => '555000111', 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse([
+                ['phone_number_id' => '555000111', 'business_account_id' => 'waba-1'],
+            ])],
+            $this->webhookRegistrationResponses('wh-created-2')
+        ));
 
         $this->actingAs($admin)->post(route('kapsowhatsapp.store'), $payload);
         $this->actingAs($admin)->post(route('kapsowhatsapp.store'), $payload)
@@ -259,12 +327,23 @@ class AdminAccountsTest extends TestCase
         $this->assertSame('secret-key', Settings::apiKey(), 'posting api_key on the per-account form must not touch the module-wide key');
     }
 
-    public function test_an_account_can_be_created_without_a_webhook_secret()
+    /**
+     * webhook_secret has never been an admin-supplied form field -- store()
+     * does not read it from the request at all. Before automatic
+     * registration this meant a freshly created account simply had no
+     * secret yet; now register() mints one immediately as part of create,
+     * so what this asserts is that the secret came from that registration,
+     * never from anything posted (there is nothing to post it in).
+     */
+    public function test_an_account_can_be_created_with_no_webhook_secret_in_the_request()
     {
         $mailbox = $this->testMailbox();
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => '123456789012399', 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse([
+                ['phone_number_id' => '123456789012399', 'business_account_id' => 'waba-1'],
+            ])],
+            $this->webhookRegistrationResponses('wh-created-3')
+        ));
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
@@ -275,7 +354,7 @@ class AdminAccountsTest extends TestCase
 
         $account = KapsoAccount::where('phone_number_id', '123456789012399')->first();
         $this->assertNotNull($account);
-        $this->assertNull($account->webhook_secret);
+        $this->assertNotNull($account->webhook_secret, 'the secret comes from automatic registration, not from the request');
     }
 
     // --- destroy ---

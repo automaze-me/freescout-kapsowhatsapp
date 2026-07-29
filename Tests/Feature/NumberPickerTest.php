@@ -10,6 +10,7 @@ use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
 use Modules\KapsoWhatsApp\Services\Settings;
+use Modules\KapsoWhatsApp\Services\WebhookRegistrar;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class NumberPickerTest extends TestCase
@@ -38,6 +39,22 @@ class NumberPickerTest extends TestCase
         ];
     }
 
+    /**
+     * store() now registers the new account's webhook right after saving it
+     * (findOwnWebhook()'s list, then a create), so any test whose fake queue
+     * reaches applyCreateRequest() successfully needs these two more queued
+     * after its numbersResponse().
+     */
+    protected function webhookRegistrationResponses(string $webhookId = 'wh-created'): array
+    {
+        $url = WebhookRegistrar::webhookUrl();
+
+        return [
+            new Response(200, [], json_encode(['data' => []])),
+            new Response(201, [], json_encode(['data' => ['id' => $webhookId, 'active' => true, 'url' => $url]])),
+        ];
+    }
+
     public function test_the_form_renders_a_dropdown_of_the_projects_numbers()
     {
         Settings::setApiKey('key-abc');
@@ -59,7 +76,10 @@ class NumberPickerTest extends TestCase
     public function test_saving_takes_both_ids_from_kapso_not_from_the_form()
     {
         Settings::setApiKey('key-abc');
-        $this->fakeResponses([$this->numbersResponse($this->twoNumbers())]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse($this->twoNumbers())],
+            $this->webhookRegistrationResponses('wh-np-1')
+        ));
 
         $mailbox = $this->testMailbox();
 
@@ -163,7 +183,10 @@ class NumberPickerTest extends TestCase
     public function test_a_blank_name_is_filled_in_from_the_selected_number()
     {
         Settings::setApiKey('key-abc');
-        $this->fakeResponses([$this->numbersResponse($this->twoNumbers())]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse($this->twoNumbers())],
+            $this->webhookRegistrationResponses('wh-np-2')
+        ));
 
         $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.store'), [
             'name'            => '',
@@ -185,9 +208,12 @@ class NumberPickerTest extends TestCase
     public function test_a_blank_name_falls_back_to_the_number_not_a_quality_rating()
     {
         Settings::setApiKey('key-abc');
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => '333', 'business_account_id' => 'waba-3', 'display_phone_number' => '+49 151 3', 'quality_rating' => 'RED'],
-        ])]);
+        $this->fakeResponses(array_merge(
+            [$this->numbersResponse([
+                ['phone_number_id' => '333', 'business_account_id' => 'waba-3', 'display_phone_number' => '+49 151 3', 'quality_rating' => 'RED'],
+            ])],
+            $this->webhookRegistrationResponses('wh-np-3')
+        ));
 
         $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.store'), [
             'name'            => '',
@@ -446,6 +472,60 @@ class NumberPickerTest extends TestCase
             ->assertStatus(403);
 
         $this->assertSame('existing-key', Settings::apiKey());
+    }
+
+    /**
+     * The most common registration failure is a bad/missing key. Once the
+     * admin actually saves a new one, every account's throttle is cleared so
+     * the very next settings-page load registers/heals them immediately
+     * instead of making the admin wait out the 5-minute stale window.
+     */
+    public function test_saving_a_key_nulls_the_registration_throttle_on_existing_accounts()
+    {
+        $this->fakeResponses([]);
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Existing',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->webhook_check_attempted_at = now();
+        $account->save();
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => 'fresh-key'])
+            ->assertStatus(302);
+
+        $this->assertNull($account->fresh()->webhook_check_attempted_at, 'a newly saved key must un-throttle every account so the next load retries them right away');
+    }
+
+    /**
+     * A blank submission ("leave unchanged") must not have this side effect
+     * -- only a key that is actually saved un-throttles anything.
+     */
+    public function test_a_blank_api_key_submission_does_not_touch_the_throttle()
+    {
+        Settings::setApiKey('existing-key');
+        $this->fakeResponses([]);
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Existing',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->webhook_check_attempted_at = now();
+        $account->save();
+        $stampedAt = $account->webhook_check_attempted_at->timestamp;
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => ''])
+            ->assertStatus(302);
+
+        $this->assertSame($stampedAt, $account->fresh()->webhook_check_attempted_at->timestamp);
     }
 
     public function test_the_settings_page_never_renders_the_stored_key()

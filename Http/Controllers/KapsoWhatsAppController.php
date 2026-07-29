@@ -28,7 +28,7 @@ class KapsoWhatsAppController extends Controller
         $accounts = KapsoAccount::orderBy('name')->get();
 
         foreach ($accounts as $account) {
-            $this->refreshStaleWebhookStatus($account);
+            $this->reconcileWebhook($account);
         }
 
         // This counts WhatsApp *delivery* failures (KapsoMessage rows with an
@@ -75,6 +75,16 @@ class KapsoWhatsAppController extends Controller
 
         if ($apiKey !== '') {
             Settings::setApiKey($apiKey);
+
+            // The most common registration failure is a bad/missing key: once
+            // the admin has actually saved a new one, every account's
+            // throttle is cleared so the very next settings-page load
+            // registers/heals them right away instead of waiting out the
+            // stale window. A plain query builder update() -- no model
+            // events needed, and none of this module's own logic listens
+            // for any.
+            KapsoAccount::query()->update(['webhook_check_attempted_at' => null]);
+
             \Session::flash('flash_success_floating', __('Kapso API key saved.'));
         }
 
@@ -82,11 +92,26 @@ class KapsoWhatsAppController extends Controller
     }
 
     /**
-     * Kapso pauses a webhook after a run of failures and never resumes it, so
-     * the pause has to become visible without anyone clicking anything. Only
-     * registered accounts are checked, and only when the last *attempt* has
-     * gone stale, so this is at most one round trip per account per few
-     * minutes -- deliberately gated on webhook_check_attempted_at rather than
+     * Keeps each account's webhook state true without anyone clicking
+     * anything -- it both heals (registers a still-unregistered active
+     * account) and refreshes (re-checks one already registered, which is how
+     * a Kapso-side pause becomes visible: Kapso pauses a webhook after a run
+     * of failures and never resumes it on its own).
+     *
+     * An unregistered account is only ever registered here when it is
+     * active -- an inactive account is never auto-registered by this
+     * ambient, page-load-triggered loop. store()'s own registration on
+     * create is deliberately not gated the same way -- creating an account
+     * (like the old manual "Register with Kapso" click it replaces, which
+     * never checked is_active either) is itself the explicit, one-time,
+     * per-account act; this loop is not. A registered account is refreshed
+     * here regardless of is_active: turning an account off does not touch
+     * its webhook in Kapso (see the README), so its status can still change
+     * and is still worth showing accurately.
+     *
+     * Either branch only runs when the last *attempt* has gone stale, so
+     * this is at most one round trip per account per few minutes --
+     * deliberately gated on webhook_check_attempted_at rather than
      * webhook_checked_at: a failing Kapso must still be throttled even though
      * a failed attempt never moves webhook_checked_at (see
      * recordWebhookError()). Gating on the "did we learn anything" timestamp
@@ -95,14 +120,16 @@ class KapsoWhatsAppController extends Controller
      * A KapsoApiException records the error on the row so it shows up next to
      * the account; the generic catch below is a last-resort guard that only
      * logs, so an unexpected internal error cannot take the settings page
-     * down. \Throwable, not \Exception, for the same reason every other
-     * must-not-blow-up boundary in this module catches it (KapsoSignature,
-     * WebhookController): a PHP \Error here must not 500 the one page an
-     * admin uses to fix things.
+     * down, or stop the loop from reaching the next account. \Throwable, not
+     * \Exception, for the same reason every other must-not-blow-up boundary
+     * in this module catches it (KapsoSignature, WebhookController): a PHP
+     * \Error here must not 500 the one page an admin uses to fix things.
      */
-    protected function refreshStaleWebhookStatus(KapsoAccount $account)
+    protected function reconcileWebhook(KapsoAccount $account)
     {
-        if (!$account->isWebhookRegistered()) {
+        $registered = $account->isWebhookRegistered();
+
+        if (!$registered && !$account->is_active) {
             return;
         }
 
@@ -112,11 +139,12 @@ class KapsoWhatsAppController extends Controller
         }
 
         try {
-            (new WebhookRegistrar($account))->refresh();
+            $registrar = new WebhookRegistrar($account);
+            $registered ? $registrar->refresh() : $registrar->register();
         } catch (KapsoApiException $e) {
             $this->recordWebhookError($account, $e);
         } catch (\Throwable $e) {
-            \Log::error('[KapsoWhatsApp] Webhook status refresh failed: '.$e->getMessage());
+            \Log::error('[KapsoWhatsApp] Webhook reconciliation failed: '.$e->getMessage());
         }
     }
 
@@ -197,9 +225,39 @@ class KapsoWhatsAppController extends Controller
 
         $account->save();
 
-        \Session::flash('flash_success_floating', __('Account saved'));
+        $this->registerNewAccountWebhook($account);
 
         return redirect()->route('kapsowhatsapp.settings');
+    }
+
+    /**
+     * The manual "Register with Kapso" step is gone: creation registers the
+     * webhook itself, right after the account row is saved. The account
+     * stays saved either way -- a Kapso outage at this exact moment must not
+     * roll back or lose data an admin already successfully entered, and the
+     * settings-page loop (reconcileWebhook()) will keep retrying on its own.
+     * Same try/catch discipline as reconcileWebhook(): a KapsoApiException
+     * records the reason on the row via recordWebhookError() (which also
+     * stamps webhook_check_attempted_at, so this attempt counts against the
+     * throttle immediately -- no double call from the settings page a moment
+     * later); any other \Throwable only logs, so a PHP \Error here cannot
+     * 500 the response to a create that otherwise succeeded.
+     */
+    protected function registerNewAccountWebhook(KapsoAccount $account)
+    {
+        try {
+            (new WebhookRegistrar($account))->register();
+
+            \Session::flash('flash_success_floating', __('Account saved. Webhook registered with Kapso.'));
+        } catch (KapsoApiException $e) {
+            $this->recordWebhookError($account, $e);
+
+            \Session::flash('flash_error_floating', __('Account saved, but the webhook could not be registered: :error It will be retried automatically.', ['error' => $e->getMessage()]));
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] Webhook registration on create failed: '.$e->getMessage());
+
+            \Session::flash('flash_error_floating', __('Account saved, but the webhook could not be registered. It will be retried automatically.'));
+        }
     }
 
     /**

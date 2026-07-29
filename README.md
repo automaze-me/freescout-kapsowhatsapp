@@ -22,8 +22,10 @@ yet sent from FreeScout.
 4. Click **Add Number**, pick a number from the dropdown and choose the mailbox its conversations
    should land in. You never copy a Phone Number ID or a Business Account ID — the module reads
    both from Kapso.
-5. Click **Register with Kapso** on the new row. The module generates the webhook secret, registers
-   the webhook against that number, and subscribes to exactly the events it needs.
+5. That's it — adding a number registers its webhook with Kapso automatically: the module
+   generates the webhook secret, registers the webhook against that number, and subscribes to
+   exactly the events it needs. If Kapso cannot be reached right then, the new row explains why
+   and the module keeps retrying on its own; nothing to click.
 6. Send yourself a WhatsApp message and check the mailbox.
 
 FreeScout must be reachable from the public internet for Kapso to deliver anything. If it is not,

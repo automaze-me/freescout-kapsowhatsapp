@@ -379,9 +379,98 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertNotNull($account->fresh()->webhook_error);
     }
 
-    public function test_an_unregistered_account_renders_a_register_button()
+    /**
+     * Registration is automatic now, so the not-registered branch has
+     * nothing left to ask an admin to click -- inverts the old
+     * test_an_unregistered_account_renders_a_register_button, which
+     * asserted the opposite. The register route/action stay live (the
+     * moved-URL "Register again" button still posts to them -- see
+     * test_a_webhook_registered_at_a_different_url_is_flagged below), only
+     * this row no longer offers it. Fresh attempted_at: this test is about
+     * the rendered markup, not about triggering a live auto-registration
+     * attempt (that is covered separately below).
+     */
+    public function test_an_unregistered_account_renders_without_a_register_button()
     {
         $this->fakeResponses([]);
+        $account                             = $this->makeAccount();
+        $account->webhook_check_attempted_at = now();
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString(route('kapsowhatsapp.webhook.register', ['id' => $account->id]), $html);
+        $this->assertStringContainsString('Not registered', $html);
+        $this->assertStringNotContainsString('curl', strtolower($html));
+        $this->assertCount(0, $this->history);
+    }
+
+    /**
+     * The settings-page loop now also heals an active account that was
+     * never registered -- e.g. one created while Kapso was down -- once its
+     * last attempt has gone stale. Mirrors the throttling discipline already
+     * proven for refresh()/resume(): a fresh attempted_at must suppress the
+     * call, and an inactive account must never be auto-registered no matter
+     * how stale.
+     */
+    public function test_settings_load_auto_registers_a_stale_unregistered_active_account()
+    {
+        $url = WebhookRegistrar::webhookUrl();
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => []])),
+            new Response(201, [], json_encode(['data' => ['id' => 'wh-auto', 'active' => true, 'url' => $url]])),
+        ]);
+
+        // webhook_check_attempted_at is null from makeAccount() -- "stale".
+        $account = $this->makeAccount();
+
+        $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+
+        $this->assertSame('wh-auto', $account->fresh()->webhook_id);
+        $this->assertCount(2, $this->history, 'exactly one list and one create');
+    }
+
+    public function test_settings_load_does_not_re_register_within_the_throttle_window()
+    {
+        $this->fakeResponses([]);
+
+        $account                             = $this->makeAccount();
+        $account->webhook_check_attempted_at = now();
+        $account->save();
+
+        $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+
+        $this->assertNull($account->fresh()->webhook_id);
+        $this->assertCount(0, $this->history);
+    }
+
+    public function test_settings_load_never_auto_registers_an_inactive_account()
+    {
+        $this->fakeResponses([]);
+
+        // Stale AND unregistered -- the only thing keeping this account from
+        // being auto-registered is is_active being false.
+        $account = $this->makeAccount(['is_active' => false]);
+
+        $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+
+        $this->assertNull($account->fresh()->webhook_id);
+        $this->assertCount(0, $this->history);
+    }
+
+    /**
+     * A failed auto-registration attempt must not stop the loop or 500 the
+     * page, and it must still stamp the throttle so the next load does not
+     * hammer Kapso again straight away -- the same discipline
+     * recordWebhookError() already enforces for refresh()/resume() failures.
+     */
+    public function test_a_failed_auto_registration_does_not_break_the_settings_page_or_the_loop()
+    {
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+
         $account = $this->makeAccount();
 
         $html = $this->actingAs($this->adminUser())
@@ -389,9 +478,36 @@ class WebhookAdminActionsTest extends TestCase
             ->assertStatus(200)
             ->getContent();
 
-        $this->assertStringContainsString(route('kapsowhatsapp.webhook.register', ['id' => $account->id]), $html);
         $this->assertStringContainsString('Not registered', $html);
-        $this->assertStringNotContainsString('curl', strtolower($html));
+
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertNotNull($account->webhook_error);
+        $this->assertNotNull($account->webhook_check_attempted_at, 'a failed attempt must still stamp the throttle');
+    }
+
+    /**
+     * The user's complaint: "The 'Check now' button is placed super ugly
+     * unaligned underneath the status." Status text and its action button
+     * now sit on one line -- no <br> between the status span and its form.
+     */
+    public function test_the_status_cell_renders_status_and_its_button_on_one_line()
+    {
+        $this->fakeResponses([]);
+
+        $account                             = $this->makeAccount();
+        $account->webhook_id                 = 'wh-1';
+        $account->webhook_active             = true;
+        $account->webhook_checked_at         = now();
+        $account->webhook_check_attempted_at = now();
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString('<br>', $html);
     }
 
     public function test_a_paused_account_renders_the_reason_and_a_resume_button()
@@ -481,6 +597,7 @@ class WebhookAdminActionsTest extends TestCase
 
         $this->assertStringContainsString('https://old.example.com/kapso-whatsapp/webhook', $html);
         $this->assertStringContainsString('Register again', $html);
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.register', ['id' => $account->id]), $html, 'a moved-URL row keeps its Register again button even though a not-registered row lost its own');
     }
 
     /**

@@ -78,31 +78,34 @@
                             <td>{{ $account->mailbox ? $account->mailbox->name : '—' }}</td>
                             <td>{{ $account->is_active ? __('Yes') : __('No') }}</td>
                             <td>
-                                @if (!$account->isWebhookRegistered())
-                                    <span class="text-muted">{{ __('Not registered') }}</span><br>
-                                    <form method="POST" action="{{ route('kapsowhatsapp.webhook.register', ['id' => $account->id]) }}" style="display:inline">
-                                        {{ csrf_field() }}
-                                        <button type="submit" class="btn btn-primary btn-xs">{{ __('Register with Kapso') }}</button>
-                                    </form>
-                                @elseif ($account->isWebhookPaused())
-                                    <span class="text-danger">{{ __('Paused by Kapso') }}</span><br>
-                                    <form method="POST" action="{{ route('kapsowhatsapp.webhook.resume', ['id' => $account->id]) }}" style="display:inline">
-                                        {{ csrf_field() }}
-                                        <button type="submit" class="btn btn-default btn-xs">{{ __('Re-enable') }}</button>
-                                    </form>
-                                @elseif ($account->isWebhookStatusUnknown())
-                                    <span class="text-warning">{{ __('Registered, status not confirmed') }}</span><br>
-                                    <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">
-                                        {{ csrf_field() }}
-                                        <button type="submit" class="btn btn-default btn-xs">{{ __('Check now') }}</button>
-                                    </form>
-                                @else
-                                    <span class="text-success">{{ __('Active') }}</span><br>
-                                    <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">
-                                        {{ csrf_field() }}
-                                        <button type="submit" class="btn btn-default btn-xs">{{ __('Check now') }}</button>
-                                    </form>
-                                @endif
+                                {{-- Status text and its action button (if any) sit on one line,
+                                     vertically centred -- the moved-URL block and the error line
+                                     below stay as secondary lines. Registration is automatic now,
+                                     so the not-registered branch is text only: there is nothing
+                                     left for an admin to click here. --}}
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    @if (!$account->isWebhookRegistered())
+                                        <span class="text-muted">{{ __('Not registered') }}</span>
+                                    @elseif ($account->isWebhookPaused())
+                                        <span class="text-danger">{{ __('Paused by Kapso') }}</span>
+                                        <form method="POST" action="{{ route('kapsowhatsapp.webhook.resume', ['id' => $account->id]) }}" style="display:inline">
+                                            {{ csrf_field() }}
+                                            <button type="submit" class="btn btn-default btn-xs">{{ __('Re-enable') }}</button>
+                                        </form>
+                                    @elseif ($account->isWebhookStatusUnknown())
+                                        <span class="text-warning">{{ __('Registered, status not confirmed') }}</span>
+                                        <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">
+                                            {{ csrf_field() }}
+                                            <button type="submit" class="btn btn-default btn-xs">{{ __('Check now') }}</button>
+                                        </form>
+                                    @else
+                                        <span class="text-success">{{ __('Active') }}</span>
+                                        <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">
+                                            {{ csrf_field() }}
+                                            <button type="submit" class="btn btn-default btn-xs">{{ __('Check now') }}</button>
+                                        </form>
+                                    @endif
+                                </div>
 
                                 @if ($account->webhookUrlHasMoved($webhookUrl))
                                     <div class="text-warning small">
