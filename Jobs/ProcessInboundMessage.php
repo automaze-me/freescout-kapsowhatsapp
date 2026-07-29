@@ -90,21 +90,21 @@ class ProcessInboundMessage implements ShouldQueue
 
         // Media is downloaded here, before the transaction opens: it's
         // network I/O (an HTTP round-trip to Kapso) and must never run while
-        // holding open a database transaction. The bytes are handed into the
-        // transaction below purely for the (fast, local) DB/disk write.
+        // holding open a database transaction. The bytes are kept in memory
+        // and only turned into an Attachment (a disk write) after the
+        // transaction below has committed — see the comment past the
+        // try/catch for why.
         $mediaInfo  = $this->mediaInfo($message);
         $mediaBytes = $mediaInfo ? (new KapsoClient($account))->downloadMedia($mediaInfo['url']) : null;
 
         $conversation = null;
         $thread       = null;
         $kapsoMessage = null;
-        $attachmentId = null;
 
         try {
             \DB::transaction(function () use (
                 $account, $mailbox, $customer, $message, $wamid, $body, $e164,
-                $mediaInfo, $mediaBytes,
-                &$conversation, &$thread, &$kapsoMessage, &$attachmentId
+                &$conversation, &$thread, &$kapsoMessage
             ) {
                 $resolved     = (new ConversationResolver())->resolve($customer, $mailbox, Conversation::subjectFromText($body['raw']));
                 $conversation = $resolved['conversation'];
@@ -126,10 +126,6 @@ class ProcessInboundMessage implements ShouldQueue
                 }
                 $thread->save();
 
-                if ($mediaInfo) {
-                    $attachmentId = $this->attachMedia($mediaInfo, $mediaBytes, $thread);
-                }
-
                 // The unique index on `wamid` is the real dedupe guard: if a
                 // concurrent job for the same message committed between our
                 // lookup above and here, this throws and the whole
@@ -144,7 +140,6 @@ class ProcessInboundMessage implements ShouldQueue
                     'direction'             => KapsoMessage::DIRECTION_INBOUND,
                     'status'                => $message['kapso']['status'] ?? 'received',
                     'contact_phone'         => $e164,
-                    'attachment_id'         => $attachmentId,
                 ]);
 
                 // Match core's ordering (Thread.php:1170/1227, FetchEmails.php:1246-1247/1318):
@@ -177,10 +172,36 @@ class ProcessInboundMessage implements ShouldQueue
             // speculative conversation/thread work above was rolled back
             // with the transaction. Defer to that job's row and make sure
             // its events still get dispatched even if it never got the
-            // chance to.
+            // chance to. $mediaBytes (if any) is simply discarded here: it
+            // was only ever held in memory, never written to disk, so the
+            // losing job leaves nothing behind to clean up.
             $this->dispatchPendingEvents($raced);
 
             return;
+        }
+
+        // The attachment is created only now, after the conversation/thread/
+        // message writes above have durably committed. Laravel 5.5 has no
+        // DB::afterCommit() (that arrived in Laravel 8), so this runs as
+        // plain code straight after the transaction call returns instead.
+        // Creating it earlier (inside the transaction, as a first attempt at
+        // this did) meant any rollback — e.g. the concurrent-wamid race
+        // handled above — would discard the attachment's DB row while the
+        // file Attachment::create() already wrote to disk stayed behind
+        // forever, since filesystem writes are not covered by a SQL
+        // rollback. By construction there is nothing left to roll back at
+        // this point: $thread and $kapsoMessage are already committed. If
+        // attachment creation itself still fails here, the message must
+        // still survive — attachMedia() falls back to the same "attachment
+        // could not be retrieved" note the download-failure path produces,
+        // and never sets has_attachments without a matching attachment row.
+        if ($mediaInfo) {
+            $attachmentId = $this->attachMedia($mediaInfo, $mediaBytes, $thread);
+
+            if ($attachmentId) {
+                $kapsoMessage->attachment_id = $attachmentId;
+                $kapsoMessage->save();
+            }
         }
 
         $mailbox->updateFoldersCounters();
@@ -289,10 +310,11 @@ class ProcessInboundMessage implements ShouldQueue
      * Turns already-downloaded media bytes into a FreeScout attachment on
      * $thread. Takes the bytes rather than downloading them itself: the
      * download is network I/O and must happen before `\DB::transaction()`
-     * opens, while this runs inside it (it only needs the thread's id and a
-     * couple of fast local writes). Returns the created attachment id, or
-     * null when there was no media or the download failed — either way
-     * $thread is annotated so the message itself is never lost.
+     * opens, while this runs after it has committed (it only needs the
+     * thread's id, which the transaction already assigned, plus a couple of
+     * fast local writes). Returns the created attachment id, or null when
+     * there was no media or the download failed — either way $thread is
+     * annotated so the message itself is never lost.
      *
      * $type is passed as null (not `Attachment::typeNameToInt($mimeType)`):
      * that helper keys off bare type names like "image", not full mime
@@ -309,16 +331,30 @@ class ProcessInboundMessage implements ShouldQueue
             return null;
         }
 
-        $attachment = Attachment::create(
-            $mediaInfo['file_name'],
-            $mediaInfo['mime_type'],
-            null,
-            $bytes,
-            null,
-            false,
-            $thread->id,
-            null
-        );
+        // This runs after the transaction has committed (see the caller), so
+        // there is no rollback to lean on any more: an exception here (e.g.
+        // the DB write half of Attachment::create() failing after the file
+        // half already landed on disk) must be caught here, or it would bail
+        // out of handle() entirely and skip dispatchPendingEvents() for a
+        // message that is otherwise already safely persisted.
+        try {
+            $attachment = Attachment::create(
+                $mediaInfo['file_name'],
+                $mediaInfo['mime_type'],
+                null,
+                $bytes,
+                null,
+                false,
+                $thread->id,
+                null
+            );
+        } catch (\Exception $e) {
+            \Log::error('[KapsoWhatsApp] Attachment::create() threw', [
+                'thread_id' => $thread->id,
+                'exception' => $e,
+            ]);
+            $attachment = null;
+        }
 
         if (!$attachment) {
             $this->noteMediaFailure($thread, $mediaInfo['file_name']);

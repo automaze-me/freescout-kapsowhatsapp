@@ -12,12 +12,6 @@ use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class InboundMediaTest extends TestCase
 {
-    protected function tearDown(): void
-    {
-        KapsoClient::clearFake();
-        parent::tearDown();
-    }
-
     protected function makeAccount(): KapsoAccount
     {
         $account = new KapsoAccount();

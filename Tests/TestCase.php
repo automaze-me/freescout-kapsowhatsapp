@@ -2,7 +2,9 @@
 
 namespace Modules\KapsoWhatsApp\Tests;
 
+use App\Attachment;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Modules\KapsoWhatsApp\Services\KapsoClient;
 use Tests\TestCase as CoreTestCase;
 
 abstract class TestCase extends CoreTestCase
@@ -22,6 +24,39 @@ abstract class TestCase extends CoreTestCase
 
         if (!\Module::isActive('kapsowhatsapp')) {
             $this->markTestSkipped('The kapsowhatsapp module must be active in the testing database.');
+        }
+    }
+
+    /**
+     * Centralised here (rather than in each test's own tearDown()) so a
+     * future test that adopts the KapsoClient::fake() seam cannot forget to
+     * reset it and leak a fake handler into whichever test runs next.
+     */
+    protected function tearDown(): void
+    {
+        KapsoClient::clearFake();
+        $this->deleteAttachmentFilesWrittenDuringThisTest();
+
+        parent::tearDown();
+    }
+
+    /**
+     * Attachment::create() writes the file to disk *and* inserts a DB row.
+     * DatabaseTransactions wraps this whole test in one connection
+     * transaction and rolls it back after tearDown() — which discards the DB
+     * row but cannot touch the disk half, since a filesystem write is not
+     * part of the SQL transaction. Without this, every test that creates a
+     * real attachment (e.g. via ProcessInboundMessage's media handling)
+     * leaves a stray file behind on every single run, forever. Deleting the
+     * files here (via the connection that is still open — parent::tearDown()
+     * is what actually rolls it back) is the only place that can see them.
+     */
+    private function deleteAttachmentFilesWrittenDuringThisTest(): void
+    {
+        $attachments = Attachment::all();
+
+        if ($attachments->isNotEmpty()) {
+            Attachment::deleteForever($attachments);
         }
     }
 

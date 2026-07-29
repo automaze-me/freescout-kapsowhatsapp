@@ -3,13 +3,13 @@
 namespace Modules\KapsoWhatsApp\Services;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 
 class KapsoClient
 {
-    const BASE_URL = 'https://api.kapso.ai';
-
     protected $account;
+    protected $client;
 
     /**
      * Test seam. Set by KapsoClient::fake() so feature tests never make real
@@ -17,9 +17,17 @@ class KapsoClient
      */
     protected static $fakeHandler = null;
 
-    public function __construct(KapsoAccount $account)
+    /**
+     * $client is injectable so tests can point downloadMedia() at a Guzzle
+     * MockHandler and assert on the real HTTP path (headers, URI, timeout,
+     * error handling) instead of only exercising KapsoClient::fake(). The
+     * production default — a real Guzzle Client with a 30s timeout — is
+     * unchanged when no client is passed.
+     */
+    public function __construct(KapsoAccount $account, ClientInterface $client = null)
     {
         $this->account = $account;
+        $this->client  = $client ?: new Client(['timeout' => 30]);
     }
 
     public static function fake(callable $handler)
@@ -48,7 +56,7 @@ class KapsoClient
         }
 
         try {
-            $response = (new Client(['timeout' => 30]))->request('GET', $url, [
+            $response = $this->client->request('GET', $url, [
                 'headers' => ['X-API-Key' => $this->account->api_key],
             ]);
 
