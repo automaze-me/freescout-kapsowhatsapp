@@ -307,6 +307,18 @@ class NumberPickerTest extends TestCase
         $this->assertSame('existing-key', Settings::apiKey());
     }
 
+    public function test_a_whitespace_only_api_key_leaves_the_stored_one_alone()
+    {
+        Settings::setApiKey('existing-key');
+        $this->fakeResponses([]);
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => '   '])
+            ->assertStatus(302);
+
+        $this->assertSame('existing-key', Settings::apiKey());
+    }
+
     public function test_a_non_admin_cannot_save_the_api_key()
     {
         Settings::setApiKey('existing-key');

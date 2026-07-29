@@ -63,8 +63,8 @@ class KapsoWhatsAppController extends Controller
 
         $this->validate($request, ['api_key' => 'nullable|string|max:512']);
 
-        if ($request->filled('api_key')) {
-            Settings::setApiKey(trim($request->input('api_key')));
+        if (trim((string) $request->input('api_key')) !== '') {
+            Settings::setApiKey(trim((string) $request->input('api_key')));
             \Session::flash('flash_success_floating', __('Kapso API key saved.'));
         }
 
