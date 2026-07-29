@@ -374,6 +374,20 @@ class WebhookRegistrar
             if (array_key_exists('phone_number_id', $webhook)
                 && $webhook['phone_number_id'] !== null
                 && (string) $webhook['phone_number_id'] !== (string) $this->account->phone_number_id) {
+                // Correct and the safe direction, but it rests on Kapso's
+                // phone_number_id being the same identifier space as the
+                // {phone_number_id} path parameter this account was
+                // configured with. If that assumption is ever wrong, this
+                // silently refuses to adopt a webhook that actually is ours
+                // and creates a duplicate instead -- info, not warning,
+                // because a multi-account install is expected to skip
+                // entries belonging to its other accounts routinely.
+                \Log::info('[KapsoWhatsApp] findOwnWebhook: skipped a URL-matching webhook because its phone_number_id did not match this account.', [
+                    'account_id'              => $this->account->id,
+                    'account_phone_number_id' => $this->account->phone_number_id,
+                    'webhook_phone_number_id' => $webhook['phone_number_id'],
+                ]);
+
                 continue;
             }
 
