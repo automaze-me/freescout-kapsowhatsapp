@@ -175,21 +175,25 @@ class ProcessInboundMessage implements ShouldQueue
     }
 
     /**
-     * Fires the core Laravel events and Eventy hooks exactly once per
-     * message, even across retries and concurrent workers. `events_dispatched_at`
-     * is inbound-only and is claimed atomically: the `UPDATE ... WHERE
-     * events_dispatched_at IS NULL` below is the only place the column is
-     * written, and it is a compare-and-set — only the worker whose UPDATE
-     * actually matches a row may dispatch. This closes two duplicate-fire
-     * paths a plain read-then-write would leave open: (1) the race-recovery
-     * `catch` block calling this for a message whose *winning* job has
-     * committed but not yet reached its own dispatch call (marker still NULL
-     * at that moment), and (2) a throwing listener causing the job to retry
-     * — without the atomic claim, a NULL marker would look identical to
-     * "never attempted" on every retry and re-fire everything each time.
-     * A row that already has the marker set (genuine duplicate delivery, or
-     * already claimed by another worker) makes the UPDATE affect 0 rows and
-     * this is a no-op.
+     * Fires the core Laravel events and Eventy hooks at most once per
+     * message, even across retries and concurrent workers.
+     * `events_dispatched_at` is inbound-only and is claimed atomically: the
+     * `UPDATE ... WHERE events_dispatched_at IS NULL` below is the only place
+     * the column is written, and it is a compare-and-set — only the worker
+     * whose UPDATE actually matches a row may dispatch. This closes two
+     * duplicate-fire paths a plain read-then-write would leave open: (1) the
+     * race-recovery `catch` block calling this for a message whose *winning*
+     * job has committed but not yet reached its own dispatch call (marker
+     * still NULL at that moment), and (2) a throwing listener causing the
+     * job to retry — without the atomic claim, a NULL marker would look
+     * identical to "never attempted" on every retry and re-fire everything
+     * each time. A row that already has the marker set (genuine duplicate
+     * delivery, or already claimed by another worker) makes the UPDATE
+     * affect 0 rows and this is a no-op. The guarantee is at-most-once, not
+     * exactly-once: a worker that dies between the claim committing and the
+     * event() calls below returning loses the events permanently, since
+     * nothing ever re-drives a row whose marker is already set. That is the
+     * deliberate trade for never double-firing notifications.
      */
     protected function dispatchPendingEvents(KapsoMessage $kapsoMessage)
     {
@@ -201,14 +205,11 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
-        $claimed = KapsoMessage::where('id', $kapsoMessage->id)
-            ->whereNull('events_dispatched_at')
-            ->update(['events_dispatched_at' => now()]);
-
-        if (!$claimed) {
-            return; // another worker already owns these events
-        }
-
+        // Resolved before the claim so that a missing thread/conversation
+        // bails out without ever marking the row as dispatched — leaving it
+        // eligible for a future retry to try again, instead of permanently
+        // losing the events. Only the claim itself, and the event dispatch
+        // it guards, should sit inside the unrecoverable exposure window.
         $thread       = $kapsoMessage->thread_id ? Thread::find($kapsoMessage->thread_id) : null;
         $conversation = $thread ? $thread->conversation : null;
 
@@ -217,6 +218,14 @@ class ProcessInboundMessage implements ShouldQueue
         }
 
         $customer = $conversation->customer;
+
+        $claimed = KapsoMessage::where('id', $kapsoMessage->id)
+            ->whereNull('events_dispatched_at')
+            ->update(['events_dispatched_at' => now()]);
+
+        if (!$claimed) {
+            return; // another worker already owns these events
+        }
 
         // Inbound over a webhook bypasses the mail-fetch pipeline, so
         // nothing else raises these. Without them, notifications, workflows
