@@ -61,10 +61,20 @@ class KapsoWhatsAppController extends Controller
     {
         $this->authorizeAdmin();
 
-        $this->validate($request, ['api_key' => 'nullable|string|max:512']);
+        $apiKey = trim((string) $request->input('api_key', ''));
 
-        if (trim((string) $request->input('api_key')) !== '') {
-            Settings::setApiKey(trim((string) $request->input('api_key')));
+        // Deliberately no validate() here: a failed validation flashes the
+        // submitted input into the session for old(), and while nothing ever
+        // renders api_key back, a secret does not belong in the session store
+        // at all. The one rule (a length cap) is enforced by hand instead.
+        if (mb_strlen($apiKey) > 512) {
+            \Session::flash('flash_error_floating', __('That does not look like a Kapso API key.'));
+
+            return redirect()->route('kapsowhatsapp.settings');
+        }
+
+        if ($apiKey !== '') {
+            Settings::setApiKey($apiKey);
             \Session::flash('flash_success_floating', __('Kapso API key saved.'));
         }
 

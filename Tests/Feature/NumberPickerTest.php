@@ -319,6 +319,27 @@ class NumberPickerTest extends TestCase
         $this->assertSame('existing-key', Settings::apiKey());
     }
 
+    /**
+     * saveApiKey() deliberately avoids validate(): a failed validation
+     * flashes the submitted input into the session for old(), and a secret
+     * must never land in the session store even though nothing renders it.
+     */
+    public function test_an_oversized_api_key_is_rejected_without_entering_the_session()
+    {
+        Settings::setApiKey('existing-key');
+        $this->fakeResponses([]);
+
+        $huge = str_repeat('k', 600);
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => $huge])
+            ->assertStatus(302)
+            ->assertSessionHas('flash_error_floating')
+            ->assertSessionMissing('_old_input');
+
+        $this->assertSame('existing-key', Settings::apiKey());
+    }
+
     public function test_a_non_admin_cannot_save_the_api_key()
     {
         Settings::setApiKey('existing-key');
