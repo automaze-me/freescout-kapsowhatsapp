@@ -267,6 +267,97 @@ class InboundMessageTest extends TestCase
     }
 
     /**
+     * Mirrors FetchEmails.php/Thread.php: a further message from a customer
+     * whose conversation is marked Spam must append there rather than
+     * spawning a fresh conversation -- otherwise marking a number as Spam
+     * gives no ongoing protection, since every later message would open a
+     * brand new ACTIVE conversation.
+     */
+    public function test_append_to_a_spam_conversation_lands_on_it_instead_of_creating_a_new_one()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $customer     = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, '+4915199999999');
+        $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
+
+        $conversation->status = Conversation::STATUS_SPAM;
+        $conversation->save();
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message'             => ['id' => 'wamid.in.2', 'text' => ['body' => 'Second']],
+            'is_new_conversation' => false,
+        ])))->handle();
+
+        $this->assertSame(1, Conversation::where('customer_id', $customer->id)->count());
+        $this->assertSame($conversation->id,
+            (int) KapsoMessage::where('wamid', 'wamid.in.2')->value('conversation_id'));
+    }
+
+    /**
+     * The Spam guard in ConversationResolver::reactivate() only protects
+     * anything if the open-conversation query actually surfaces Spam rows in
+     * the first place -- this is the regression guard for that: appending
+     * must never pull a Spam conversation back into an active folder or
+     * bump its status.
+     */
+    public function test_append_to_a_spam_conversation_does_not_reactivate_it()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $customer     = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, '+4915199999999');
+        $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
+
+        $conversation->status = Conversation::STATUS_SPAM;
+        $conversation->save();
+        $spamFolderId = $conversation->folder_id;
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message'             => ['id' => 'wamid.in.2', 'text' => ['body' => 'Second']],
+            'is_new_conversation' => false,
+        ])))->handle();
+
+        $conversation->refresh();
+
+        $this->assertSame(Conversation::STATUS_SPAM, (int) $conversation->status);
+        $this->assertSame($spamFolderId, $conversation->folder_id);
+    }
+
+    /**
+     * Core does not suppress CustomerReplied (or the matching Eventy hooks)
+     * for a Spam conversation -- see app/Listeners/SendNotificationToUsers.php,
+     * which still receives the event and only skips *sending the
+     * notification* once inside, via $event->conversation->isSpam(). This
+     * module must match that: fire the event normally and let core's own
+     * listener do the suppression, rather than swallowing it here.
+     */
+    public function test_append_to_a_spam_conversation_still_fires_customer_replied()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $customer     = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, '+4915199999999');
+        $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
+
+        $conversation->status = Conversation::STATUS_SPAM;
+        $conversation->save();
+
+        \Event::fake([CustomerCreatedConversation::class, CustomerReplied::class]);
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message'             => ['id' => 'wamid.in.2', 'text' => ['body' => 'Second']],
+            'is_new_conversation' => false,
+        ])))->handle();
+
+        \Event::assertDispatched(CustomerReplied::class);
+        \Event::assertNotDispatched(CustomerCreatedConversation::class);
+    }
+
+    /**
      * The test suite uses DatabaseTransactions, so a real post-commit retry
      * can't be observed here — instead this directly recreates the state a
      * crashed/threw-before-dispatch retry would find: a KapsoMessage row

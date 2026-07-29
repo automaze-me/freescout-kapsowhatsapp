@@ -13,13 +13,20 @@ class ConversationResolver
      * Append to the customer's open conversation in this mailbox regardless of
      * its channel — that is what lets a WhatsApp message land on an email
      * conversation. Closed conversations are never reopened implicitly.
+     *
+     * Spam is deliberately included here (unlike Closed): mirrors
+     * FetchEmails.php/Thread.php, which append a customer's further message
+     * to an existing Spam conversation instead of opening a fresh one, so
+     * marking a number as Spam keeps giving ongoing protection. reactivate()
+     * below is what stops that append from pulling the conversation back
+     * into an active folder.
      */
     public function resolve(Customer $customer, Mailbox $mailbox, $subject)
     {
         $open = Conversation::where('customer_id', $customer->id)
             ->where('mailbox_id', $mailbox->id)
             ->where('state', Conversation::STATE_PUBLISHED)
-            ->whereIn('status', [Conversation::STATUS_ACTIVE, Conversation::STATUS_PENDING])
+            ->whereIn('status', [Conversation::STATUS_ACTIVE, Conversation::STATUS_PENDING, Conversation::STATUS_SPAM])
             ->orderBy('last_reply_at', 'desc')
             ->orderBy('id', 'desc')
             ->first();
