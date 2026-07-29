@@ -288,4 +288,125 @@ class WebhookRegistrationTest extends TestCase
     {
         $this->assertSame(route('kapsowhatsapp.webhook'), WebhookRegistrar::webhookUrl());
     }
+
+    /**
+     * Carried over from Task 3's review: register()'s PATCH branch has two
+     * fallbacks that were never pinned down -- the `$webhook['id'] ?? $existing['id']`
+     * fallback for a 204/{} PATCH response, and the resulting webhook_active
+     * staying null (not false) because an empty response tells us nothing.
+     */
+    public function test_adopting_a_webhook_whose_patch_response_is_empty_still_keeps_the_adopted_id()
+    {
+        $url = WebhookRegistrar::webhookUrl();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                ['id' => 'wh-mine', 'url' => $url, 'active' => false],
+            ]])),
+            new Response(204, [], json_encode([])),
+        ]);
+
+        $account = $this->makeAccount();
+        (new WebhookRegistrar($account))->register();
+
+        $account = $account->fresh();
+        $this->assertSame('wh-mine', $account->webhook_id);
+        $this->assertNull($account->webhook_active);
+    }
+
+    public function test_refresh_records_that_kapso_paused_the_webhook_and_why()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => false]])),
+            new Response(200, [], json_encode(['data' => [
+                ['event' => 'whatsapp.message.received', 'status' => 'failed', 'response_status' => 403, 'attempt_count' => 4],
+                ['event' => 'whatsapp.message.received', 'status' => 'failed', 'response_status' => 403, 'attempt_count' => 4],
+            ]])),
+        ]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+
+        $account = $account->fresh();
+        $this->assertFalse($account->webhook_active);
+        $this->assertTrue($account->isWebhookPaused());
+        $this->assertStringContainsString('403', $account->webhook_error);
+        $this->assertStringNotContainsString('curl', strtolower($account->webhook_error));
+    }
+
+    public function test_refresh_clears_a_previous_error_when_the_webhook_is_healthy()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true]])),
+        ]);
+
+        $account                = $this->makeAccount();
+        $account->webhook_id    = 'wh-1';
+        $account->webhook_error = 'something old';
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+
+        $account = $account->fresh();
+        $this->assertTrue($account->webhook_active);
+        $this->assertNull($account->webhook_error);
+        $this->assertCount(1, $this->history, 'a healthy webhook must not trigger a deliveries lookup');
+    }
+
+    public function test_refresh_reports_a_webhook_that_was_deleted_in_kapso()
+    {
+        $this->fakeResponses([new Response(404, [], json_encode(['error' => 'Not found']))]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-gone';
+        $account->save();
+
+        $this->assertNull((new WebhookRegistrar($account))->refresh());
+
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertFalse($account->isWebhookRegistered());
+        $this->assertStringContainsString('no longer exists', $account->webhook_error);
+    }
+
+    public function test_refresh_does_nothing_when_no_webhook_is_registered()
+    {
+        $this->fakeResponses([]);
+
+        $this->assertNull((new WebhookRegistrar($this->makeAccount()))->refresh());
+        $this->assertCount(0, $this->history);
+    }
+
+    public function test_resume_reactivates_our_webhook_without_touching_its_secret()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'active' => true]])),
+        ]);
+
+        $account                = $this->makeAccount();
+        $account->webhook_id    = 'wh-1';
+        $account->webhook_active = false;
+        $account->save();
+
+        (new WebhookRegistrar($account))->resume();
+
+        $account = $account->fresh();
+        $this->assertTrue($account->webhook_active);
+        $this->assertNull($account->webhook_error);
+
+        $sent = $this->jsonBodyOf(0)['whatsapp_webhook'];
+        $this->assertSame(['active' => true], $sent, 'resume must send only the active flag');
+    }
+
+    public function test_resume_without_a_registration_fails_loudly()
+    {
+        $this->fakeResponses([]);
+
+        $this->expectException(KapsoApiException::class);
+
+        (new WebhookRegistrar($this->makeAccount()))->resume();
+    }
 }
