@@ -3,8 +3,9 @@
 WhatsApp as a communication channel for [FreeScout](https://freescout.net), via the
 [Kapso](https://kapso.ai) API.
 
-Stage 1 (this release) handles **inbound** messages: WhatsApp messages become FreeScout
-conversations and threads, with media, reactions and customer identity matching. Replies are not
+This module currently handles **inbound** messages: WhatsApp messages become FreeScout
+conversations and threads, with media, reactions and customer identity matching, and it
+registers and monitors its own Kapso webhook so no manual setup step is needed. Replies are not
 yet sent from FreeScout.
 
 ## Requirements
@@ -30,11 +31,19 @@ the accounts page says so.
 The **Webhook** column shows what Kapso currently thinks. Kapso pauses a webhook automatically
 after a run of failed deliveries and never resumes it on its own, so a paused webhook shows up
 here as *Paused by Kapso*, together with the HTTP status your install returned, and a **Re-enable**
-button. Registering again is always safe: it adopts the existing webhook rather than creating a
-second one, and re-issues the secret.
+button. Registering again is always safe in the sense that it adopts the existing webhook rather
+than creating a second one — but it does change that webhook: it issues a new secret and rewrites
+its URL to this install's current address, every time.
 
 Webhooks belonging to anything else on the same number — an n8n bridge, another helpdesk — are
-never read, changed or deleted by this module.
+never modified, disabled or deleted by this module. It does list them (to find its own among
+them), but that list is only ever read, never acted on.
+
+Deleting an account here, or turning it inactive, does not touch its webhook in Kapso — the
+webhook stays registered and active. Kapso will keep sending it deliveries, which this FreeScout
+will now 403 (there is no account left to authenticate them against), and after enough failures
+Kapso will auto-pause it. If you are retiring a number for good, remove its webhook from Kapso's
+own dashboard.
 
 ## Configuration
 
@@ -53,14 +62,14 @@ never read, changed or deleted by this module.
 
 Kapso also delivers `whatsapp.message.sent` and `whatsapp.message.failed` to the webhook. These
 exist so FreeScout's copy of the conversation stays complete even while something *other* than
-FreeScout is sending WhatsApp messages for the same number — during the Stage 1 parallel run
-that is the n8n bridge, or an agent using Kapso's own inbox directly. (Stage 2 adds native
-sending from FreeScout itself; see "Stage 1 done" below.)
+FreeScout is sending WhatsApp messages for the same number — while native sending from FreeScout
+itself is not yet implemented, that is the n8n bridge, or an agent using Kapso's own inbox
+directly.
 
 - **A send made outside FreeScout** appears as a normal-looking outbound thread on the matching
   conversation, marked *"Sent outside FreeScout"* so it's clear the reply did not originate here.
-  A send FreeScout itself already knows about (once Stage 2 lands) is recognised by its message
-  id and not duplicated.
+  A send FreeScout itself already knows about (once native sending is added) is recognised by its
+  message id and not duplicated.
 - **A delivery failure** — the customer-service window has closed, the number is invalid, etc. —
   is posted as a line item on the conversation with Kapso's error code and message, so a failed
   send is never silently invisible. This is posted whether or not the corresponding `sent` event
