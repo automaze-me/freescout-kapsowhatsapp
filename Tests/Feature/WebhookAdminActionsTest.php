@@ -115,6 +115,75 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertTrue($account->fresh()->webhook_active);
     }
 
+    /**
+     * Before this fix, resume() had no 404 branch, so a webhook Kapso had
+     * deleted made the button tell the admin to check the Phone Number ID
+     * and API key -- both correct -- instead of naming the actual problem.
+     */
+    public function test_resuming_a_webhook_that_kapso_deleted_names_it_as_gone()
+    {
+        $this->fakeResponses([new Response(404, [], json_encode(['error' => 'Not found']))]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-gone';
+        $account->webhook_active     = false;
+        $account->webhook_checked_at = now();
+        $account->save();
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]))
+            ->assertStatus(302)
+            ->assertSessionHas('flash_success_floating');
+
+        $message = session('flash_success_floating');
+        $this->assertStringContainsString('no longer exists', $message);
+        $this->assertStringNotContainsString('Phone Number ID', $message);
+
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertFalse($account->isWebhookRegistered());
+    }
+
+    /**
+     * The bug this fixes: recordWebhookError() used to stamp
+     * webhook_checked_at on every failure, including this one. A failed
+     * check is not a check -- stamping it made refreshStaleWebhookStatus()
+     * skip the very recheck that could correct a wrong diagnosis on the next
+     * settings-page load, so an admin hitting a transient error could loop
+     * on it forever.
+     */
+    public function test_a_failed_resume_does_not_block_the_settings_page_from_rechecking()
+    {
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = false;
+        $account->webhook_checked_at = now()->subHour();
+        $account->save();
+        $staleTimestamp = $account->webhook_checked_at->timestamp;
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]))
+            ->assertStatus(302)
+            ->assertSessionHas('flash_error_floating');
+
+        $account = $account->fresh();
+        $this->assertNotNull($account->webhook_error);
+        $this->assertSame($staleTimestamp, $account->webhook_checked_at->timestamp, 'a failed check must not stamp webhook_checked_at');
+
+        // Now prove the settings page actually issues a fresh check rather
+        // than skipping it as "already checked recently".
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true]])),
+        ]);
+
+        $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+
+        $this->assertCount(1, $this->history, 'the settings page must issue a fresh check, not skip it');
+        $this->assertTrue($account->fresh()->webhook_active);
+    }
+
     public function test_an_admin_can_refresh_the_status()
     {
         $this->fakeResponses([
@@ -130,6 +199,28 @@ class WebhookAdminActionsTest extends TestCase
             ->assertStatus(302);
 
         $this->assertTrue($account->fresh()->webhook_active);
+    }
+
+    /**
+     * refreshWebhook() is only reachable by a direct POST (the settings page
+     * never renders a "Check now" button for an unregistered account -- it
+     * renders "Register with Kapso" instead), but hitting it that way used to
+     * flash "Webhook status updated." even though nothing was registered and
+     * no check was ever made.
+     */
+    public function test_refreshing_an_account_with_nothing_registered_says_so()
+    {
+        $this->fakeResponses([]);
+
+        $account = $this->makeAccount();
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]))
+            ->assertStatus(302)
+            ->assertSessionHas('flash_success_floating');
+
+        $this->assertStringContainsString('Nothing is registered', session('flash_success_floating'));
+        $this->assertCount(0, $this->history, 'nothing registered means nothing to check');
     }
 
     public function test_non_admins_cannot_use_any_webhook_action()
@@ -150,7 +241,13 @@ class WebhookAdminActionsTest extends TestCase
 
     /**
      * The settings page refreshes stale statuses on load -- that is what makes
-     * an auto-pause visible without anyone clicking anything.
+     * an auto-pause visible without anyone clicking anything. Asserted on the
+     * rendered response body, not just the model: the mechanism this test
+     * exists to protect is refresh -> render, and asserting only
+     * $account->fresh()->webhook_active would still pass if a future refactor
+     * (e.g. re-querying $accounts after the refresh loop instead of mutating
+     * in place) silently broke the view's half of that seam while every
+     * other test stayed green.
      */
     public function test_the_settings_page_refreshes_a_stale_status()
     {
@@ -165,7 +262,13 @@ class WebhookAdminActionsTest extends TestCase
         $account->webhook_checked_at = now()->subHour();
         $account->save();
 
-        $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('Paused by Kapso', $html);
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]), $html);
 
         $this->assertFalse($account->fresh()->webhook_active);
     }

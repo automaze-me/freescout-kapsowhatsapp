@@ -401,6 +401,30 @@ class WebhookRegistrationTest extends TestCase
         $this->assertSame(['active' => true], $sent, 'resume must send only the active flag');
     }
 
+    /**
+     * Before this fix, resume()'s 404 fell through to the generic error
+     * mapper and told the admin Kapso does not recognise the Phone Number ID
+     * -- pointing at two settings that are correct, on the one button this
+     * feature exists to provide. resume() must diagnose a 404 the same way
+     * refresh() already does: the webhook is gone, not the account is wrong.
+     */
+    public function test_resume_reports_a_webhook_that_was_deleted_in_kapso()
+    {
+        $this->fakeResponses([new Response(404, [], json_encode(['error' => 'Not found']))]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-gone';
+        $account->save();
+
+        $this->assertNull((new WebhookRegistrar($account))->resume());
+
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertFalse($account->isWebhookRegistered());
+        $this->assertStringContainsString('no longer exists', $account->webhook_error);
+        $this->assertStringNotContainsString('Phone Number ID', $account->webhook_error);
+    }
+
     public function test_resume_without_a_registration_fails_loudly()
     {
         $this->fakeResponses([]);

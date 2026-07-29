@@ -120,11 +120,7 @@ class WebhookRegistrar
                 throw $e;
             }
 
-            $this->account->webhook_id         = null;
-            $this->account->webhook_active     = null;
-            $this->account->webhook_checked_at = now();
-            $this->account->webhook_error      = __('The webhook this module registered no longer exists in Kapso. Register it again.');
-            $this->account->save();
+            $this->markWebhookGone();
 
             return null;
         }
@@ -140,15 +136,33 @@ class WebhookRegistrar
         return $webhook;
     }
 
+    /**
+     * Reactivates our webhook. Returns null in the same "gone" case refresh()
+     * does -- Kapso answering 404 to the PATCH means there is nothing left to
+     * re-enable, not that this account's phone number ID or API key is wrong,
+     * which is what the generic error mapper would otherwise say on the one
+     * button this feature exists to provide.
+     */
     public function resume()
     {
         if (!$this->account->webhook_id) {
             throw new KapsoApiException(__('This account has no registered webhook yet. Register it first.'));
         }
 
-        // Only the active flag: re-sending secret_key or events here would
-        // rewrite settings the admin may have no reason to expect to change.
-        $webhook = $this->client->updatePhoneNumberWebhook($this->account->webhook_id, ['active' => true]);
+        try {
+            // Only the active flag: re-sending secret_key or events here
+            // would rewrite settings the admin may have no reason to expect
+            // to change.
+            $webhook = $this->client->updatePhoneNumberWebhook($this->account->webhook_id, ['active' => true]);
+        } catch (KapsoApiException $e) {
+            if ($e->getHttpStatus() !== 404) {
+                throw $e;
+            }
+
+            $this->markWebhookGone();
+
+            return null;
+        }
 
         // Same rule as register(): a response that omits `active` (e.g. an
         // empty body from a 204) tells us nothing about the current state --
@@ -160,6 +174,25 @@ class WebhookRegistrar
         $this->account->save();
 
         return $webhook;
+    }
+
+    /**
+     * Shared by refresh() and resume(): either one hitting a 404 against our
+     * stored webhook id means the same thing -- Kapso no longer has it,
+     * deleted from their dashboard or the project/number it belonged to was
+     * removed. There is nothing left to reconcile against, so the only
+     * correct move is to forget it locally and say so, the same diagnosis
+     * whichever action ran into the 404. This still counts as a successful
+     * check: it stamps webhook_checked_at because we genuinely learned the
+     * current state, unlike a failed call that tells us nothing.
+     */
+    protected function markWebhookGone()
+    {
+        $this->account->webhook_id         = null;
+        $this->account->webhook_active     = null;
+        $this->account->webhook_checked_at = now();
+        $this->account->webhook_error      = __('The webhook this module registered no longer exists in Kapso. Register it again.');
+        $this->account->save();
     }
 
     /**

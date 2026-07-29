@@ -55,7 +55,11 @@ class KapsoWhatsAppController extends Controller
      * stale, so this is at most one round trip per account per few minutes.
      * A KapsoApiException records the error on the row so it shows up next to
      * the account; the generic catch below is a last-resort guard that only
-     * logs, so an unexpected internal error cannot take the settings page down.
+     * logs, so an unexpected internal error cannot take the settings page
+     * down. \Throwable, not \Exception, for the same reason every other
+     * must-not-blow-up boundary in this module catches it (KapsoSignature,
+     * WebhookController): a PHP \Error here must not 500 the one page an
+     * admin uses to fix things.
      */
     protected function refreshStaleWebhookStatus(KapsoAccount $account)
     {
@@ -72,7 +76,7 @@ class KapsoWhatsAppController extends Controller
             (new WebhookRegistrar($account))->refresh();
         } catch (KapsoApiException $e) {
             $this->recordWebhookError($account, $e);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             \Log::error('[KapsoWhatsApp] Webhook status refresh failed: '.$e->getMessage());
         }
     }
@@ -159,19 +163,36 @@ class KapsoWhatsAppController extends Controller
 
     public function refreshWebhook($id)
     {
-        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
-            $registrar->refresh();
+        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar, KapsoAccount $account) {
+            $wasRegistered = $account->isWebhookRegistered();
+            $webhook       = $registrar->refresh();
 
-            return __('Webhook status updated.');
+            if ($webhook !== null) {
+                return __('Webhook status updated.');
+            }
+
+            // refresh() returns null both when nothing was ever registered
+            // (nothing to say beyond that) and when it just discovered the
+            // webhook is gone from Kapso's side -- in which case it already
+            // wrote the specific reason to webhook_error, which is a better
+            // answer than a generic "updated".
+            return $wasRegistered
+                ? $account->webhook_error
+                : __('Nothing is registered for this account.');
         });
     }
 
     public function resumeWebhook($id)
     {
-        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
-            $registrar->resume();
+        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar, KapsoAccount $account) {
+            $webhook = $registrar->resume();
 
-            return __('Webhook re-enabled.');
+            // resume() only returns null after discovering the webhook is
+            // gone from Kapso's side (see WebhookRegistrar::markWebhookGone),
+            // which already wrote the reason to webhook_error.
+            return $webhook !== null
+                ? __('Webhook re-enabled.')
+                : $account->webhook_error;
         });
     }
 
@@ -189,7 +210,7 @@ class KapsoWhatsAppController extends Controller
         $account = KapsoAccount::findOrFail($id);
 
         try {
-            \Session::flash('flash_success_floating', $action(new WebhookRegistrar($account)));
+            \Session::flash('flash_success_floating', $action(new WebhookRegistrar($account), $account));
         } catch (KapsoApiException $e) {
             $this->recordWebhookError($account, $e);
 
@@ -203,11 +224,18 @@ class KapsoWhatsAppController extends Controller
      * Persists a Kapso API failure on the account row so it is visible next
      * to the account on the settings page, without needing anyone to click
      * anything.
+     *
+     * Deliberately does NOT stamp webhook_checked_at: a failed check is not
+     * a check. Stamping it here previously made a transient failure stick --
+     * refreshStaleWebhookStatus() saw a fresh timestamp and skipped the very
+     * recheck that could have corrected a wrong diagnosis, so an admin
+     * hitting a spurious error could loop on it forever. Leaving the old
+     * timestamp alone means the next settings-page load tries again for
+     * real.
      */
     protected function recordWebhookError(KapsoAccount $account, KapsoApiException $e)
     {
-        $account->webhook_error      = $e->getMessage();
-        $account->webhook_checked_at = now();
+        $account->webhook_error = $e->getMessage();
         $account->save();
     }
 
