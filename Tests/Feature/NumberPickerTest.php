@@ -366,10 +366,10 @@ class NumberPickerTest extends TestCase
 
         $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => '',
-            // Posted so the request passes the old contract's "required"
-            // validation too -- otherwise it would fail validation and never
-            // reach the rename logic at all, hiding the real difference this
-            // test is meant to catch.
+            // Inert on the current contract -- update() never reads this
+            // field. Posted anyway so the test doubles as proof: were update()
+            // to regress into looking it up, the fake response above would be
+            // consumed and the zero-HTTP assertion below would catch it.
             'phone_number_id' => '111',
             'mailbox_id'      => $account->mailbox_id,
             'is_active'       => 1,

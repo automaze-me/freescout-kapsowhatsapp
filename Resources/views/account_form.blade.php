@@ -68,7 +68,11 @@
                     <div class="col-sm-6">
                         <input type="text" class="form-control input-sized" name="name" value="{{ old('name', $account->name) ?? '' }}">
                         @include('partials/field_error', ['field' => 'name'])
-                        <p class="text-help">{{ __('Optional. Left blank, the number\'s name in Kapso is used.') }}</p>
+                        @if ($account->id)
+                            <p class="text-help">{{ __('Optional. Left blank, the current name is kept.') }}</p>
+                        @else
+                            <p class="text-help">{{ __('Optional. Left blank, the number\'s name in Kapso is used.') }}</p>
+                        @endif
                     </div>
                 </div>
 
