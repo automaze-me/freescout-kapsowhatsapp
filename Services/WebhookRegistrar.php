@@ -73,13 +73,22 @@ class WebhookRegistrar
             ? $this->client->updatePhoneNumberWebhook($existing['id'], $attributes)
             : $this->client->createPhoneNumberWebhook($attributes);
 
+        // A 204 No Content response (Kapso's PATCH can return one) decodes to
+        // an empty $webhook, which must not be read as "no id" -- the id we
+        // PATCHed against is still the correct one to store.
+        $id = $webhook['id'] ?? ($existing['id'] ?? null);
+
         // Written only after Kapso confirmed. If this save were to fail, Kapso
         // would hold a secret we do not -- every delivery would then 403 until
         // someone registers again, which is precisely what re-running fixes.
-        $this->account->webhook_id         = isset($webhook['id']) ? (string) $webhook['id'] : null;
+        $this->account->webhook_id         = $id !== null ? (string) $id : null;
         $this->account->webhook_url        = $url;
         $this->account->webhook_secret     = $secret;
-        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : true;
+        // webhook_active is tri-state: null means "not known". A response
+        // that omits `active` (e.g. an empty body from a 204) tells us
+        // nothing about the current state -- optimistically writing true
+        // would claim knowledge we don't have.
+        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : null;
         $this->account->webhook_checked_at = now();
         $this->account->webhook_error      = null;
         $this->account->save();
@@ -111,9 +120,10 @@ class WebhookRegistrar
 
         // url_contains is a substring filter, so the exact comparison below is
         // what actually decides ownership -- "…/webhook/proxy" contains our
-        // URL but is not ours.
+        // URL but is not ours. A url match with no id would otherwise trigger
+        // a PATCH to the collection endpoint instead of a clean create.
         foreach ($this->client->listPhoneNumberWebhooks($url) as $webhook) {
-            if (is_array($webhook) && isset($webhook['url']) && $webhook['url'] === $url) {
+            if (is_array($webhook) && isset($webhook['url']) && $webhook['url'] === $url && !empty($webhook['id'])) {
                 return $webhook;
             }
         }

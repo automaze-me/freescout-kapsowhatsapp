@@ -132,6 +132,10 @@ class WebhookRegistrationTest extends TestCase
         $this->assertSame('PATCH', $this->history[1]['request']->getMethod());
         $this->assertStringContainsString('wh-mine', (string) $this->history[1]['request']->getUri());
         $this->assertTrue($this->jsonBodyOf(1)['whatsapp_webhook']['active'], 'adopting must also un-pause');
+        $this->assertFalse(
+            $this->jsonBodyOf(1)['whatsapp_webhook']['buffer_enabled'],
+            'buffering must be switched off explicitly even when adopting an auto-paused webhook'
+        );
     }
 
     /**
@@ -205,10 +209,15 @@ class WebhookRegistrationTest extends TestCase
 
     public function test_a_rejected_api_key_leaves_the_stored_state_untouched()
     {
-        $this->fakeResponses([new Response(401, [], json_encode(['error' => 'Invalid API key']))]);
+        $account                 = $this->makeAccount();
+        $account->webhook_id     = 'wh-live';
+        $account->webhook_secret = 'old-secret';
+        $account->save();
 
-        $account = $this->makeAccount();
-        $before  = $account->webhook_secret;
+        // A stored webhook_id sends findOwnWebhook() straight to the
+        // GET-by-id path, so a single queued response is enough: the 401
+        // must be rethrown before any list/create/update call is made.
+        $this->fakeResponses([new Response(401, [], json_encode(['error' => 'Invalid API key']))]);
 
         try {
             (new WebhookRegistrar($account))->register();
@@ -218,8 +227,61 @@ class WebhookRegistrationTest extends TestCase
         }
 
         $account = $account->fresh();
+        $this->assertSame('wh-live', $account->webhook_id, 'a failed registration must not lose the stored webhook id');
+        $this->assertSame('old-secret', $account->webhook_secret, 'a failed registration must not burn the working secret');
+    }
+
+    /**
+     * The more dangerous shape than an outright auth rejection: the list
+     * call succeeds (so findOwnWebhook() has already talked to Kapso once)
+     * and only the following create fails. register() must still write
+     * nothing until the create/update call itself has succeeded.
+     */
+    public function test_a_server_error_on_create_after_a_successful_list_leaves_the_stored_secret_untouched()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => []])),                          // list: none of ours
+            new Response(500, [], json_encode(['error' => 'Internal Server Error'])),     // create fails
+        ]);
+
+        $account                 = $this->makeAccount();
+        $account->webhook_secret = 'old-secret';
+        $account->save();
+
+        try {
+            (new WebhookRegistrar($account))->register();
+            $this->fail('Expected KapsoApiException');
+        } catch (KapsoApiException $e) {
+            $this->assertSame(500, $e->getHttpStatus());
+        }
+
+        $account = $account->fresh();
         $this->assertNull($account->webhook_id);
-        $this->assertSame($before, $account->webhook_secret, 'a failed registration must not burn the working secret');
+        $this->assertSame('old-secret', $account->webhook_secret, 'a failed create must not burn the working secret');
+    }
+
+    /**
+     * The non-404 rethrow in findOwnWebhook() is what stops a transient
+     * server error on the id fetch from falling through to listing and
+     * creating a duplicate webhook. Pin it down so widening that catch later
+     * doesn't silently regress.
+     */
+    public function test_a_server_error_fetching_the_stored_webhook_stops_before_any_further_request()
+    {
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'Internal Server Error']))]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-live';
+        $account->save();
+
+        try {
+            (new WebhookRegistrar($account))->register();
+            $this->fail('Expected KapsoApiException');
+        } catch (KapsoApiException $e) {
+            $this->assertSame(500, $e->getHttpStatus());
+        }
+
+        $this->assertCount(1, $this->history, 'a transient error fetching our own webhook must not fall through to listing/creating a duplicate');
     }
 
     public function test_the_webhook_url_is_this_installs_own_endpoint()
