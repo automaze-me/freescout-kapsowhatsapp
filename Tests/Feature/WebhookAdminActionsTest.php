@@ -257,6 +257,32 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertStringContainsString(route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]), $html);
     }
 
+    /**
+     * A 204 No Content PATCH response (documented behaviour of register() and
+     * resume()) leaves webhook_active null. The page must not present that as
+     * "Active" -- it genuinely does not know -- but it must still offer the
+     * same one-click way to find out.
+     */
+    public function test_an_account_with_unknown_webhook_status_is_not_shown_as_active()
+    {
+        $this->fakeResponses([]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = null;
+        $account->webhook_checked_at = now();
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString('Active</span>', $html);
+        $this->assertStringContainsString('Registered, status not confirmed', $html);
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]), $html);
+    }
+
     public function test_a_webhook_registered_at_a_different_url_is_flagged()
     {
         $this->fakeResponses([]);

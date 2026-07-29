@@ -55,6 +55,12 @@
                             {{ csrf_field() }}
                             <button type="submit" class="btn btn-default btn-xs">{{ __('Re-enable') }}</button>
                         </form>
+                    @elseif ($account->isWebhookStatusUnknown())
+                        <span class="text-warning">{{ __('Registered, status not confirmed') }}</span><br>
+                        <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">
+                            {{ csrf_field() }}
+                            <button type="submit" class="btn btn-default btn-xs">{{ __('Check now') }}</button>
+                        </form>
                     @else
                         <span class="text-success">{{ __('Active') }}</span><br>
                         <form method="POST" action="{{ route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]) }}" style="display:inline">

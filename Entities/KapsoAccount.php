@@ -54,6 +54,19 @@ class KapsoAccount extends Model
     }
 
     /**
+     * True when the webhook is registered but we genuinely do not know
+     * whether it is active or paused. Kapso's PATCH can answer with a 204 No
+     * Content -- register() and resume() both leave webhook_active null
+     * rather than guess in that case, because writing true would claim
+     * knowledge we don't have. Distinct from isWebhookPaused(): that is a
+     * confirmed "no", this is "we were never told".
+     */
+    public function isWebhookStatusUnknown()
+    {
+        return $this->isWebhookRegistered() && is_null($this->webhook_active);
+    }
+
+    /**
      * True when the webhook was registered against a different URL than this
      * install now advertises -- an APP_URL edit, a new domain, or an admin
      * who registered while browsing FreeScout on a second hostname.
