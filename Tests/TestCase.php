@@ -51,6 +51,7 @@ abstract class TestCase extends CoreTestCase
     protected function tearDown(): void
     {
         KapsoClient::clearFake();
+        KapsoClient::clearFakeHttp();
         SystemUser::clearCache();
         $this->deleteAttachmentFilesWrittenDuringThisTest();
 
