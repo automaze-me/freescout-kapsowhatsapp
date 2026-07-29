@@ -16,7 +16,9 @@
                 <div class="form-group{{ $errors->has('api_key') ? ' has-error' : '' }}">
                     <label class="col-sm-2 control-label">{{ __('Kapso API Key') }}</label>
                     <div class="col-sm-6">
-                        <div class="input-group">
+                        {{-- input-sized-lg keeps the field at core's settings-form width
+                             (320px, max-width 100%) instead of spanning the whole column. --}}
+                        <div class="input-group input-sized-lg">
                             <input type="password" class="form-control" name="api_key" autocomplete="new-password"
                                    placeholder="{{ $hasApiKey ? __('Saved — enter a new key to replace it') : __('Enter your Kapso API key') }}">
                             <span class="input-group-btn">
@@ -64,6 +66,11 @@
                         </tr>
                     </thead>
                     <tbody>
+                        @if (!count($accounts))
+                            <tr>
+                                <td colspan="8" class="text-help">{{ __('No WhatsApp numbers added yet.') }}</td>
+                            </tr>
+                        @endif
                         @foreach ($accounts as $account)
                         <tr>
                             <td>{{ $account->name }}</td>
@@ -119,7 +126,7 @@
                                     0
                                 @endif
                             </td>
-                            <td>
+                            <td class="nowrap">
                                 <a href="{{ route('kapsowhatsapp.edit', ['id' => $account->id]) }}">{{ __('Edit') }}</a>
                                 &nbsp;|&nbsp;
                                 <form method="POST" action="{{ route('kapsowhatsapp.destroy', ['id' => $account->id]) }}"

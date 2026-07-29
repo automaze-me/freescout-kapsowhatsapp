@@ -261,7 +261,7 @@ class KapsoClient
         switch ($status) {
             case 401:
             case 403:
-                return __('Kapso rejected the API key. Enter a valid Kapso API key for this account.');
+                return __('Kapso rejected the API key. Enter a valid Kapso API key on the WhatsApp Accounts page.');
             case 404:
                 return __('Kapso does not recognise this Phone Number ID for the project this API key belongs to. Check the Phone Number ID and the API key.');
             case 422:
