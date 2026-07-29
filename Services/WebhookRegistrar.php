@@ -150,7 +150,11 @@ class WebhookRegistrar
         // rewrite settings the admin may have no reason to expect to change.
         $webhook = $this->client->updatePhoneNumberWebhook($this->account->webhook_id, ['active' => true]);
 
-        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : true;
+        // Same rule as register(): a response that omits `active` (e.g. an
+        // empty body from a 204) tells us nothing about the current state --
+        // writing true here would claim knowledge we don't have, even though
+        // we just asked Kapso to set it.
+        $this->account->webhook_active     = isset($webhook['active']) ? (bool) $webhook['active'] : null;
         $this->account->webhook_checked_at = now();
         $this->account->webhook_error      = null;
         $this->account->save();
@@ -166,8 +170,10 @@ class WebhookRegistrar
      */
     protected function pauseReason()
     {
+        $limit = 20;
+
         try {
-            $failures = $this->client->listWebhookDeliveries($this->account->webhook_id, '24h', 20);
+            $failures = $this->client->listWebhookDeliveries($this->account->webhook_id, '24h', $limit);
         } catch (KapsoApiException $e) {
             $failures = [];
         }
@@ -176,13 +182,25 @@ class WebhookRegistrar
             return __('Kapso has paused this webhook. Kapso pauses a webhook automatically after a run of failed deliveries and never resumes it on its own.');
         }
 
+        // GET /webhook_deliveries is documented to return "webhook delivery
+        // attempts for your project, most recent first" -- so the first
+        // element is the latest attempt without needing to sort here.
         $latest   = reset($failures);
         $response = (isset($latest['response_status']) && $latest['response_status'])
             ? __('HTTP :status', ['status' => (int) $latest['response_status']])
             : __('no response');
 
+        $count = count($failures);
+
+        // The lookup is capped at $limit, so a count that hits the cap is not
+        // necessarily the true total -- say so rather than reporting a number
+        // that may be too low with nothing to indicate it was truncated.
+        $countText = $count >= $limit
+            ? __('at least :count', ['count' => $count])
+            : (string) $count;
+
         return __('Kapso has paused this webhook after failed deliveries. :count failed in the last 24 hours; the most recent attempt got :response from this FreeScout.', [
-            'count'    => count($failures),
+            'count'    => $countText,
             'response' => $response,
         ]);
     }
@@ -203,12 +221,21 @@ class WebhookRegistrar
 
         $host = strtolower($host);
 
-        if ($host === 'localhost' || substr($host, -6) === '.local' || strpos($host, '.') === false) {
-            return true;
+        // parse_url() returns IPv6 hosts with their brackets still attached
+        // (e.g. "[::1]"), which filter_var() does not accept.
+        if (substr($host, 0, 1) === '[' && substr($host, -1) === ']') {
+            $host = substr($host, 1, -1);
         }
 
+        // IP literals are classified on their own terms -- checked before the
+        // dotless-hostname rule below, which would otherwise misclassify
+        // every IPv6 literal (none contain a ".") as an unreachable hostname.
         if (filter_var($host, FILTER_VALIDATE_IP)) {
             return !filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+        }
+
+        if ($host === 'localhost' || substr($host, -6) === '.local' || strpos($host, '.') === false) {
+            return true;
         }
 
         return false;

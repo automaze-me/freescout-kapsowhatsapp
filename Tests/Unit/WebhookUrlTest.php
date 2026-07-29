@@ -34,4 +34,25 @@ class WebhookUrlTest extends TestCase
             $this->assertTrue(WebhookRegistrar::looksUnreachable($url), $url.' should be flagged as unreachable');
         }
     }
+
+    /**
+     * parse_url() returns IPv6 hosts with their brackets still attached
+     * (e.g. "[2606:4700:4700::1111]"), and IPv6 literals never contain a
+     * "." -- so a naive dotless-hostname check would misclassify every one
+     * of them, public or not, as unreachable.
+     */
+    public function test_a_public_ipv6_literal_is_treated_as_reachable()
+    {
+        $this->assertFalse(WebhookRegistrar::looksUnreachable('http://[2606:4700:4700::1111]/kapso-whatsapp/webhook'));
+    }
+
+    public function test_ipv6_loopback_and_unique_local_addresses_are_flagged()
+    {
+        foreach ([
+            'http://[::1]/kapso-whatsapp/webhook',
+            'http://[fd12:3456:789a:1::1]/kapso-whatsapp/webhook',
+        ] as $url) {
+            $this->assertTrue(WebhookRegistrar::looksUnreachable($url), $url.' should be flagged as unreachable');
+        }
+    }
 }

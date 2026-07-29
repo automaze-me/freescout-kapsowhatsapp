@@ -409,4 +409,50 @@ class WebhookRegistrationTest extends TestCase
 
         (new WebhookRegistrar($this->makeAccount()))->resume();
     }
+
+    /**
+     * resume() must follow the same tri-state rule as register(): a PATCH
+     * response that omits `active` (e.g. an empty body from a 204) tells us
+     * nothing about the current state, so webhook_active must stay null --
+     * not be optimistically set to true just because the PATCH was accepted.
+     */
+    public function test_resume_against_an_empty_patch_response_leaves_webhook_active_null()
+    {
+        $this->fakeResponses([
+            new Response(204, [], json_encode([])),
+        ]);
+
+        $account                 = $this->makeAccount();
+        $account->webhook_id     = 'wh-1';
+        $account->webhook_active = false;
+        $account->save();
+
+        (new WebhookRegistrar($account))->resume();
+
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_active);
+    }
+
+    /**
+     * The non-404 rethrow in refresh() is what stops a transient server error
+     * on the status GET from being mistaken for "the webhook was deleted" and
+     * wiping the stored webhook_id.
+     */
+    public function test_refresh_rethrows_a_non_404_error_and_leaves_the_webhook_id_stored()
+    {
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'Internal Server Error']))]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        try {
+            (new WebhookRegistrar($account))->refresh();
+            $this->fail('Expected KapsoApiException');
+        } catch (KapsoApiException $e) {
+            $this->assertSame(500, $e->getHttpStatus());
+        }
+
+        $this->assertSame('wh-1', $account->fresh()->webhook_id, 'a transient error must not wipe the stored webhook id');
+    }
 }
