@@ -6,6 +6,7 @@ use App\Conversation;
 use App\Customer;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
+use App\Folder;
 use App\Thread;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
@@ -146,7 +147,7 @@ class InboundMessageTest extends TestCase
 
         (new ProcessInboundMessage($account->id, $this->payload()))->handle();
 
-        \Event::assertDispatched(CustomerCreatedConversation::class);
+        \Event::assertDispatchedTimes(CustomerCreatedConversation::class, 1);
         \Event::assertNotDispatched(CustomerReplied::class);
     }
 
@@ -190,5 +191,74 @@ class InboundMessageTest extends TestCase
 
         $thread = Thread::whereIn('id', KapsoMessage::where('wamid', 'wamid.in.4')->pluck('thread_id'))->firstOrFail();
         $this->assertStringContainsString('52.52', $thread->body);
+    }
+
+    public function test_html_in_the_body_is_escaped_in_the_thread()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message' => [
+                'id'   => 'wamid.in.5',
+                'text' => ['body' => '<script>alert(1)</script><b>bold</b>'],
+            ],
+        ])))->handle();
+
+        $thread = Thread::whereIn('id', KapsoMessage::where('wamid', 'wamid.in.5')->pluck('thread_id'))->firstOrFail();
+
+        $this->assertStringNotContainsString('<script>', $thread->body);
+        $this->assertStringNotContainsString('<b>', $thread->body);
+        $this->assertStringContainsString('&lt;script&gt;', $thread->body);
+        $this->assertStringContainsString('&lt;b&gt;bold&lt;/b&gt;', $thread->body);
+    }
+
+    public function test_subject_is_built_from_raw_text_not_html_escaped_text()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message' => [
+                'id'   => 'wamid.in.6',
+                'text' => ['body' => "Hi, I can't log in & reset"],
+            ],
+        ])))->handle();
+
+        $customer     = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, '+4915199999999');
+        $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
+
+        $this->assertSame("Hi, I can't log in & reset", $conversation->subject);
+    }
+
+    public function test_append_reactivates_a_pending_conversation_and_updates_its_state()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        $customer     = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, '+4915199999999');
+        $conversation = Conversation::where('customer_id', $customer->id)->firstOrFail();
+
+        // Simulate an agent reply: FreeScout sets the conversation to PENDING.
+        $conversation->status = Conversation::STATUS_PENDING;
+        $conversation->save();
+
+        (new ProcessInboundMessage($account->id, $this->payload([
+            'message'             => ['id' => 'wamid.in.2', 'text' => ['body' => 'Second']],
+            'is_new_conversation' => false,
+        ])))->handle();
+
+        $conversation->refresh();
+
+        $this->assertSame(Conversation::STATUS_ACTIVE, (int) $conversation->status);
+        $this->assertSame(2, (int) $conversation->threads_count);
+        $this->assertSame(Conversation::PERSON_CUSTOMER, (int) $conversation->last_reply_from);
+        $this->assertNotNull($conversation->last_reply_at);
+        $this->assertTrue($conversation->last_reply_at->greaterThan(now()->subMinute()));
+
+        $unassignedFolder = Folder::where('mailbox_id', $account->mailbox_id)
+            ->where('type', Folder::TYPE_UNASSIGNED)
+            ->firstOrFail();
+
+        $this->assertSame($unassignedFolder->id, $conversation->folder_id);
     }
 }

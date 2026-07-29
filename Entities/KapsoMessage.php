@@ -16,6 +16,13 @@ class KapsoMessage extends Model
         'kapso_conversation_id', 'direction', 'status', 'contact_phone', 'error',
     ];
 
+    /**
+     * Without this, assigning a Carbon instance (see markEventsDispatched())
+     * to a column Eloquent doesn't know is a date would store the raw object
+     * instead of a DB-storable datetime string.
+     */
+    protected $dates = ['events_dispatched_at'];
+
     public function account()
     {
         return $this->belongsTo(KapsoAccount::class, 'account_id');
@@ -47,5 +54,23 @@ class KapsoMessage extends Model
         return self::where('conversation_id', $conversationId)
             ->where('direction', self::DIRECTION_INBOUND)
             ->max('created_at');
+    }
+
+    /**
+     * Whether the core FreeScout events (CustomerCreatedConversation /
+     * CustomerReplied and the matching Eventy hooks) have been confirmed
+     * dispatched for this message. `events_dispatched_at` is intentionally
+     * excluded from `$fillable` — it is set only via `markEventsDispatched()`,
+     * never via mass assignment.
+     */
+    public function eventsDispatched(): bool
+    {
+        return (bool) $this->events_dispatched_at;
+    }
+
+    public function markEventsDispatched(): void
+    {
+        $this->events_dispatched_at = now();
+        $this->save();
     }
 }
