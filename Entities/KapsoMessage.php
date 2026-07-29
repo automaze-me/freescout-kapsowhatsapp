@@ -13,7 +13,7 @@ class KapsoMessage extends Model
 
     protected $fillable = [
         'account_id', 'conversation_id', 'thread_id', 'attachment_id', 'wamid',
-        'kapso_conversation_id', 'direction', 'status', 'contact_phone', 'error',
+        'kapso_conversation_id', 'direction', 'status', 'is_reaction', 'contact_phone', 'error',
     ];
 
     /**
@@ -21,6 +21,8 @@ class KapsoMessage extends Model
      * yield a raw string instead of a Carbon instance.
      */
     protected $dates = ['events_dispatched_at'];
+
+    protected $casts = ['is_reaction' => 'boolean'];
 
     public function account()
     {

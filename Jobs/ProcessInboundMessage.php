@@ -145,6 +145,7 @@ class ProcessInboundMessage implements ShouldQueue
                     'kapso_conversation_id' => $this->payload['conversation']['id'] ?? null,
                     'direction'             => KapsoMessage::DIRECTION_INBOUND,
                     'status'                => $message['kapso']['status'] ?? 'received',
+                    'is_reaction'           => false,
                     'contact_phone'         => $e164,
                 ]);
 
@@ -257,7 +258,16 @@ class ProcessInboundMessage implements ShouldQueue
         // path would otherwise be free to claim it now and fire
         // CustomerCreatedConversation/CustomerReplied against the *target*
         // message's thread for something that is not a new customer message.
-        if ($kapsoMessage->status === 'reaction') {
+        //
+        // This is a dedicated `is_reaction` column rather than a sentinel
+        // value in `status`: `status` is written straight from
+        // `$message['kapso']['status']` for ordinary inbound messages — an
+        // unvalidated pass-through of whatever Kapso's webhook payload
+        // contains. If Kapso ever sent `kapso.status === 'reaction'` for a
+        // genuine message, guarding on that string would silently swallow
+        // its customer events. `is_reaction` is set only by this file's own
+        // two write paths and is never derived from Kapso's payload.
+        if ($kapsoMessage->is_reaction) {
             return;
         }
 
@@ -328,29 +338,62 @@ class ProcessInboundMessage implements ShouldQueue
         $thread = Thread::find($threadId);
 
         if (!$thread) {
+            // The dedupe row survived but the thread it pointed at is gone
+            // (e.g. deleted since). Log this the same way as the "unknown
+            // target" branch above rather than returning silently, since
+            // this is the more surprising of the two cases: the reaction's
+            // target was once known locally.
+            \Log::warning('[KapsoWhatsApp] Reaction target thread no longer exists, dropped', [
+                'wamid'        => $wamid,
+                'target_wamid' => $targetWamid,
+                'thread_id'    => $threadId,
+            ]);
+
             return;
         }
 
+        // preg_replace() with the `u` modifier returns null (not the
+        // original string) when its subject isn't valid UTF-8, which would
+        // otherwise blank the thread body on save. Not reachable today —
+        // $thread->body is always our own escaped HTML — but guard it rather
+        // than trust that stays true forever.
+        $stripped = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
+        $stripped = $stripped === null ? $thread->body : $stripped;
+
         if ($emoji === '') {
             // Removing a reaction: strip any previous marker.
-            $thread->body = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
+            $thread->body = $stripped;
         } else {
-            $thread->body = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body)
-                .'<p class="kapsowhatsapp-reaction">'.__('Reaction:').' '.e($emoji).'</p>';
+            $thread->body = $stripped.'<p class="kapsowhatsapp-reaction">'.__('Reaction:').' '.e($emoji).'</p>';
         }
 
         $thread->save();
 
-        KapsoMessage::create([
-            'account_id'            => $account->id,
-            'conversation_id'       => $thread->conversation_id,
-            'thread_id'             => $thread->id,
-            'wamid'                 => $wamid,
-            'kapso_conversation_id' => $this->payload['conversation']['id'] ?? null,
-            'direction'             => KapsoMessage::DIRECTION_INBOUND,
-            'status'                => 'reaction',
-            'contact_phone'         => $e164,
-        ]);
+        try {
+            KapsoMessage::create([
+                'account_id'            => $account->id,
+                'conversation_id'       => $thread->conversation_id,
+                'thread_id'             => $thread->id,
+                'wamid'                 => $wamid,
+                'kapso_conversation_id' => $this->payload['conversation']['id'] ?? null,
+                'direction'             => KapsoMessage::DIRECTION_INBOUND,
+                'is_reaction'           => true,
+                'contact_phone'         => $e164,
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Same race the main inbound path guards against: the unique
+            // index on `wamid` is the real dedupe guard, and a concurrent
+            // job for this same reaction wamid can commit between the
+            // "$existing" lookup at the top of handle() and here. If that
+            // row is now present, the winning job already applied this
+            // reaction to the thread (the body update just above is
+            // idempotent), so there is nothing left for this attempt to do.
+            // Unlike the main path, there is no dispatchPendingEvents() to
+            // defer to: reactions never fire customer events.
+            if (!KapsoMessage::where('wamid', $wamid)->exists()) {
+                throw $e;
+            }
+        }
     }
 
     /**

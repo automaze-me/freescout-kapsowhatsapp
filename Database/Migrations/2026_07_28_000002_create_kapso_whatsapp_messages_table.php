@@ -17,7 +17,21 @@ class CreateKapsoWhatsappMessagesTable extends Migration
             $table->string('wamid', 191)->nullable()->unique();
             $table->string('kapso_conversation_id', 191)->nullable()->index();
             $table->string('direction', 16);
+            // Kapso's own delivery-status string, passed through verbatim
+            // from an unvalidated webhook payload (`kapso.status`). Never
+            // write anything to this column that isn't literally what Kapso
+            // sent — in particular, never use it to mark a row as a
+            // reaction; that is what `is_reaction` below is for.
             $table->string('status', 32)->nullable();
+            // Set explicitly by both inbound write paths in
+            // ProcessInboundMessage — true only for the synthetic row
+            // applyReaction() writes to mark a reaction annotation — and
+            // never derived from `kapso.status`, which is Kapso-controlled
+            // vocabulary the module does not constrain. This lets
+            // dispatchPendingEvents() reliably tell a reaction row apart
+            // from a genuine inbound message without depending on what
+            // Kapso happens to put in `status`.
+            $table->boolean('is_reaction')->default(false);
             $table->string('contact_phone', 32)->nullable()->index();
             $table->text('error')->nullable();
             // Marks the moment the core FreeScout events/Eventy hooks were
