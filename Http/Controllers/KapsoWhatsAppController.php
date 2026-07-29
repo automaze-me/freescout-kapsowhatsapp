@@ -52,9 +52,10 @@ class KapsoWhatsAppController extends Controller
      * Kapso pauses a webhook after a run of failures and never resumes it, so
      * the pause has to become visible without anyone clicking anything. Only
      * registered accounts are checked, and only when the last reading has gone
-     * stale, so this is at most one round trip per account per few minutes --
-     * and a Kapso outage degrades to an error on the row, never to an
-     * unusable settings page.
+     * stale, so this is at most one round trip per account per few minutes.
+     * A KapsoApiException records the error on the row so it shows up next to
+     * the account; the generic catch below is a last-resort guard that only
+     * logs, so an unexpected internal error cannot take the settings page down.
      */
     protected function refreshStaleWebhookStatus(KapsoAccount $account)
     {
@@ -70,9 +71,7 @@ class KapsoWhatsAppController extends Controller
         try {
             (new WebhookRegistrar($account))->refresh();
         } catch (KapsoApiException $e) {
-            $account->webhook_error      = $e->getMessage();
-            $account->webhook_checked_at = now();
-            $account->save();
+            $this->recordWebhookError($account, $e);
         } catch (\Exception $e) {
             \Log::error('[KapsoWhatsApp] Webhook status refresh failed: '.$e->getMessage());
         }
@@ -192,14 +191,24 @@ class KapsoWhatsAppController extends Controller
         try {
             \Session::flash('flash_success_floating', $action(new WebhookRegistrar($account)));
         } catch (KapsoApiException $e) {
-            $account->webhook_error      = $e->getMessage();
-            $account->webhook_checked_at = now();
-            $account->save();
+            $this->recordWebhookError($account, $e);
 
             \Session::flash('flash_error_floating', $e->getMessage());
         }
 
         return redirect()->route('kapsowhatsapp.settings');
+    }
+
+    /**
+     * Persists a Kapso API failure on the account row so it is visible next
+     * to the account on the settings page, without needing anyone to click
+     * anything.
+     */
+    protected function recordWebhookError(KapsoAccount $account, KapsoApiException $e)
+    {
+        $account->webhook_error      = $e->getMessage();
+        $account->webhook_checked_at = now();
+        $account->save();
     }
 
     /**
