@@ -162,6 +162,65 @@ class WebhookRegistrationTest extends TestCase
     }
 
     /**
+     * Every account in one install advertises the same webhook URL, so a URL
+     * match alone is not proof of ownership -- only Kapso's phone-number
+     * scoping normally keeps two accounts' webhooks apart. A list entry that
+     * states a different phone_number_id than this account's must be skipped
+     * even though its url matches exactly, or account B's first registration
+     * could adopt account A's webhook and rotate its secret out from under
+     * it.
+     */
+    public function test_a_url_match_belonging_to_a_different_phone_number_is_not_adopted()
+    {
+        $url = WebhookRegistrar::webhookUrl();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                ['id' => 'wh-other-account', 'url' => $url, 'phone_number_id' => 'someone-elses-number', 'active' => true],
+            ]])),
+            new Response(201, [], json_encode(['data' => ['id' => 'wh-ours', 'active' => true, 'url' => $url]])),
+        ]);
+
+        $account = $this->makeAccount(['phone_number_id' => 'my-own-number']);
+        (new WebhookRegistrar($account))->register();
+
+        $this->assertSame('wh-ours', $account->fresh()->webhook_id);
+        $this->assertCount(2, $this->history, 'exactly one list and one create');
+        $this->assertSame('POST', $this->history[1]['request']->getMethod());
+
+        foreach ($this->history as $entry) {
+            $this->assertStringNotContainsString(
+                'wh-other-account',
+                (string) $entry['request']->getUri(),
+                'a webhook stating a different phone_number_id must never be addressed'
+            );
+        }
+    }
+
+    /**
+     * Older Kapso responses (or a future field removal) may omit
+     * phone_number_id entirely -- that must not block adoption of an
+     * otherwise exact URL match.
+     */
+    public function test_a_url_match_with_no_phone_number_id_field_is_still_adopted()
+    {
+        $url = WebhookRegistrar::webhookUrl();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                ['id' => 'wh-mine', 'url' => $url, 'active' => false],
+            ]])),
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-mine', 'url' => $url, 'active' => true]])),
+        ]);
+
+        $account = $this->makeAccount();
+        (new WebhookRegistrar($account))->register();
+
+        $this->assertSame('wh-mine', $account->fresh()->webhook_id);
+        $this->assertSame('PATCH', $this->history[1]['request']->getMethod());
+    }
+
+    /**
      * After a domain change our stored webhook no longer matches the current
      * URL. Moving it beats orphaning it and creating a second one.
      */

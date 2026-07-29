@@ -354,9 +354,23 @@ class WebhookRegistrar
         // URL but is not ours. A url match with no id would otherwise trigger
         // a PATCH to the collection endpoint instead of a clean create.
         foreach ($this->client->listPhoneNumberWebhooks($url) as $webhook) {
-            if (is_array($webhook) && isset($webhook['url']) && $webhook['url'] === $url && !empty($webhook['id'])) {
-                return $webhook;
+            if (!is_array($webhook) || !isset($webhook['url']) || $webhook['url'] !== $url || empty($webhook['id'])) {
+                continue;
             }
+
+            // A URL match alone is not proof of ownership: every account in
+            // this install advertises the same webhook endpoint, so only
+            // Kapso's phone-number scoping normally keeps two accounts'
+            // webhooks apart. Belt and braces -- when the entry states which
+            // phone number it belongs to, it must be this account's before
+            // being adopted. Tolerate the field being absent.
+            if (array_key_exists('phone_number_id', $webhook)
+                && $webhook['phone_number_id'] !== null
+                && (string) $webhook['phone_number_id'] !== (string) $this->account->phone_number_id) {
+                continue;
+            }
+
+            return $webhook;
         }
 
         return null;
