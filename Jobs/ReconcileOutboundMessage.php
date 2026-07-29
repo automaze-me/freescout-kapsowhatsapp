@@ -20,18 +20,34 @@ use Modules\KapsoWhatsApp\Services\PhoneNumber;
  * swallow the failure after the send was recorded. That means two concurrent
  * deliveries of the *same* event can both reach this job — the controller's
  * `X-Idempotency-Key` cache check is a has/put pair with a window between
- * them, not a lock. Each branch below therefore carries its own idempotency
- * guard rather than relying on a read-then-write check:
+ * them, not a lock — and, separately, Kapso does not guarantee that `sent`
+ * arrives before `failed` for the same message: a single job retry
+ * (`$tries = 3`) is enough to invert them even when Kapso sends them in
+ * order, and some error classes (e.g. 131047, outside the 24h window) may
+ * never produce a `sent` event at all. Each branch below therefore carries
+ * its own idempotency guard rather than relying on a read-then-write check,
+ * and `recordFailure()` does not require a pre-existing row:
  *
- * - `recordForeignSend()` relies on the unique index on
- *   `kapso_whatsapp_messages.wamid`, the same way ProcessInboundMessage does:
- *   the thread and the dedupe row are written in one transaction, and a
- *   unique-key violation rolls the whole thing back.
- * - `recordFailure()` uses an atomic `UPDATE ... WHERE status <> 'failed'`
- *   claim (mirroring `events_dispatched_at` in ProcessInboundMessage): only
- *   the delivery that actually flips the status gets to create the line
- *   item, since a failed send's `wamid` already exists and can't be reused
- *   as an insert-time dedupe guard the way a fresh row can.
+ * - `recordForeignSend()` (a `sent` event for an unknown wamid) relies on
+ *   the unique index on `kapso_whatsapp_messages.wamid`, the same way
+ *   ProcessInboundMessage does: the thread and the dedupe row are written in
+ *   one transaction, and a unique-key violation rolls the whole thing back.
+ * - `recordFailure()` for an *already-known* row uses an atomic
+ *   `UPDATE ... WHERE status IS NULL OR status <> 'failed'` claim (mirroring
+ *   `events_dispatched_at` in ProcessInboundMessage): only the delivery that
+ *   actually flips the status gets to create the line item, since the row
+ *   already exists and a fresh unique-key insert can't serve as the dedupe
+ *   guard the way it does for a brand-new row.
+ * - `recordFailure()` for an *unknown* row (the sibling `sent` has not been
+ *   processed yet, or never will be) creates the row itself, already marked
+ *   failed, using the same unique-index-plus-transaction pattern as
+ *   `recordForeignSend()`. If that insert loses a race — to a duplicate
+ *   `failed` delivery, or to the matching `sent` event committing first — the
+ *   loser applies the atomic UPDATE claim to whichever row won instead of
+ *   just deferring to it, so a `sent` that merely got there first can never
+ *   leave a message that actually failed looking delivered. Once a row is
+ *   marked failed, `handle()`'s `sent` branch no-ops on any wamid it already
+ *   knows regardless of status, so nothing downstream of that can revive it.
  */
 class ReconcileOutboundMessage implements ShouldQueue
 {
@@ -71,14 +87,19 @@ class ReconcileOutboundMessage implements ShouldQueue
         $known = KapsoMessage::where('wamid', $wamid)->first();
 
         if ($this->event === 'whatsapp.message.failed') {
-            $this->recordFailure($known, $message);
+            $this->recordFailure($account, $known, $message, $wamid);
 
             return;
         }
 
         // whatsapp.message.sent
         if ($known) {
-            // Our own send, or one already reconciled. Nothing to do.
+            // Our own send, one already reconciled, or one a `failed` event
+            // for this same wamid already recorded — possibly before this
+            // `sent` event was even processed. Never overwritten here,
+            // regardless of what `$known->status` currently holds: this is
+            // what keeps a message that actually failed from ever being
+            // flipped back to looking delivered.
             return;
         }
 
@@ -98,11 +119,7 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
-        $conversationId = KapsoMessage::where('contact_phone', $e164)
-            ->where('account_id', $account->id)
-            ->whereNotNull('conversation_id')
-            ->orderBy('id', 'desc')
-            ->value('conversation_id');
+        $conversationId = $this->resolveConversationId($account, $e164);
 
         if (!$conversationId) {
             \Log::info('[KapsoWhatsApp] Outbound event for an unknown conversation, dropped', ['wamid' => $wamid]);
@@ -116,7 +133,7 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
-        $body = $message['text']['body'] ?? ($message['kapso']['content'] ?? '');
+        $body = $this->messageBody($message);
 
         try {
             \DB::transaction(function () use ($account, $conversation, $message, $wamid, $body, $e164) {
@@ -168,48 +185,154 @@ class ReconcileOutboundMessage implements ShouldQueue
                 $conversation->save();
             });
         } catch (\Illuminate\Database\QueryException $e) {
-            if (!KapsoMessage::where('wamid', $wamid)->exists()) {
+            $raced = KapsoMessage::where('wamid', $wamid)->first();
+
+            if (!$raced) {
                 throw $e;
             }
 
-            // A concurrent delivery of this same `sent` event committed
-            // first; our speculative thread/conversation update above was
-            // rolled back with the transaction. The winning delivery already
-            // recorded it, so there is nothing left for this attempt to do.
+            // A concurrent delivery committed first — either a duplicate of
+            // this same `sent` event, or a `failed` event for the same
+            // wamid that got there first (recordFailureForUnknownSend()
+            // below runs the mirror-image of this transaction). Either way,
+            // our speculative thread/conversation update above was rolled
+            // back with the transaction, and the winning delivery's row —
+            // whatever its status — already reflects the correct outcome.
+            // In particular, a `sent` losing to a `failed` here must never
+            // try to resurrect the row as "sent"; simply deferring is what
+            // keeps that message looking failed rather than delivered.
         }
     }
 
     /**
-     * Delivery failures arrive asynchronously. A silently dropped reply is the
-     * worst outcome for a helpdesk, so this is surfaced on the conversation.
+     * Delivery failures arrive asynchronously and are not guaranteed to
+     * arrive after their matching `sent` event. A silently dropped failure
+     * is the worst outcome for a helpdesk — it leaves nothing recorded, and
+     * a subsequently-processed `sent` for the same wamid would then record
+     * the message as an ordinary successful outbound thread. So this method
+     * does not require a pre-existing row: it surfaces the failure either
+     * way.
      */
-    protected function recordFailure($known, array $message)
+    protected function recordFailure(KapsoAccount $account, $known, array $message, $wamid)
     {
-        if (!$known) {
+        $summary = $this->failureSummary($message);
+
+        if ($known) {
+            $this->applyFailureToRow($known, $summary);
+
             return;
         }
 
-        $errors = $message['kapso']['statuses'][0]['errors'] ?? [];
-        $parts  = [];
+        $this->recordFailureForUnknownSend($account, $message, $wamid, $summary);
+    }
 
-        foreach ($errors as $error) {
-            $parts[] = trim(($error['code'] ?? '').' '.($error['title'] ?? '').' — '.($error['message'] ?? ''));
+    /**
+     * A `failed` event whose wamid we've never seen: the sibling `sent`
+     * event for the same message has not been processed yet, or never
+     * arrives at all for error classes that fail before a `sent` webhook
+     * would ever fire (e.g. 131047, re-engagement outside the 24h window).
+     * Resolves the conversation exactly like recordForeignSend() does (via
+     * the recipient phone in the payload) and creates the row directly,
+     * already marked failed, so agents can see both what was attempted and
+     * why it failed.
+     */
+    protected function recordFailureForUnknownSend(KapsoAccount $account, array $message, $wamid, $summary)
+    {
+        $e164 = PhoneNumber::toE164($message['to'] ?? null);
+
+        if (!$e164) {
+            \Log::info('[KapsoWhatsApp] Delivery-failure event without a usable recipient number, dropped', ['wamid' => $wamid]);
+
+            return;
         }
 
-        $summary = $parts ? implode('; ', $parts) : __('Delivery failed');
+        $conversationId = $this->resolveConversationId($account, $e164);
+        $conversation   = $conversationId ? Conversation::find($conversationId) : null;
 
-        // Atomic claim, the same idea as `events_dispatched_at` in
-        // ProcessInboundMessage: unlike recordForeignSend() above, this row
-        // already exists (it was written when the send itself was
-        // reconciled), so a fresh unique-key insert cannot serve as the
-        // dedupe guard here. Instead, only the delivery whose UPDATE
-        // actually flips the status away from "not failed" gets to create
-        // the line item below; a second concurrent/duplicate delivery of the
-        // same failure event finds status already 'failed' and this matches
-        // zero rows. MySQL/MariaDB's row-level locking on UPDATE serialises
-        // concurrent attempts and always evaluates the WHERE clause against
-        // the latest committed data, so this is safe even when two workers
-        // race here at the same instant.
+        if (!$conversation) {
+            \Log::info('[KapsoWhatsApp] Delivery-failure event for an unknown conversation, dropped', ['wamid' => $wamid]);
+
+            return;
+        }
+
+        $body = $this->messageBody($message);
+
+        try {
+            \DB::transaction(function () use ($account, $conversation, $wamid, $body, $e164, $summary) {
+                $thread = new Thread();
+                $thread->conversation_id = $conversation->id;
+                $thread->user_id         = null;
+                $thread->type            = Thread::TYPE_MESSAGE;
+                $thread->status          = Thread::STATUS_ACTIVE;
+                $thread->state           = Thread::STATE_PUBLISHED;
+                $thread->body            = nl2br(e($body))
+                    .'<p><em>'.__('Attempted outside FreeScout, delivery failed').'</em></p>';
+                $thread->source_via      = Thread::PERSON_USER;
+                $thread->source_type     = Thread::SOURCE_TYPE_API;
+                $thread->customer_id     = $conversation->customer_id;
+                $thread->save();
+
+                // The unique index on `wamid` is the dedupe guard here too:
+                // a concurrent delivery racing us — another `failed` for the
+                // same wamid, or the matching `sent` event, whichever had
+                // not yet committed when handle() read $known as null —
+                // throws on this insert, and the whole transaction
+                // (including the thread just created above) rolls back. The
+                // catch below then applies the failure to whichever row
+                // won, rather than just deferring to it, so a `sent` that
+                // merely got there first can never leave this message
+                // looking delivered.
+                KapsoMessage::create([
+                    'account_id'            => $account->id,
+                    'conversation_id'       => $conversation->id,
+                    'thread_id'             => $thread->id,
+                    'wamid'                 => $wamid,
+                    'kapso_conversation_id' => $this->payload['conversation']['id'] ?? null,
+                    'direction'             => KapsoMessage::DIRECTION_OUTBOUND,
+                    'status'                => 'failed',
+                    'error'                 => $summary,
+                    'is_reaction'           => false,
+                    'contact_phone'         => $e164,
+                ]);
+
+                $this->createFailureLineItem($conversation, $summary);
+
+                // Deliberately not updated here, unlike recordForeignSend():
+                // last_reply_at / last_reply_from / the preview describe
+                // what the customer actually received, and this message was
+                // never delivered to them.
+            });
+        } catch (\Illuminate\Database\QueryException $e) {
+            $raced = KapsoMessage::where('wamid', $wamid)->first();
+
+            if (!$raced) {
+                throw $e;
+            }
+
+            // A concurrent delivery for this same wamid committed first —
+            // either another `failed` delivery (nothing left to do) or a
+            // `sent` delivery that merely won the create-row race
+            // (recordForeignSend() creating the row while this transaction
+            // was still being built). Apply the failure to whatever row now
+            // exists rather than just deferring to it: that is what
+            // guarantees the outcome never depends on which of `sent` /
+            // `failed` happened to commit its insert first.
+            $this->applyFailureToRow($raced, $summary);
+        }
+    }
+
+    /**
+     * Marks an existing `KapsoMessage` row failed and posts the line item,
+     * guarded by an atomic claim so a duplicate/concurrent delivery of the
+     * failure — or one that merely lost the create-row race against the
+     * matching `sent` event in recordFailureForUnknownSend() above — applies
+     * this at most once. MySQL/MariaDB's row-level locking on UPDATE
+     * serialises concurrent attempts and always evaluates the WHERE clause
+     * against the latest committed data, so this is safe even when two
+     * workers race here at the same instant.
+     */
+    protected function applyFailureToRow(KapsoMessage $known, $summary)
+    {
         $claimed = KapsoMessage::where('id', $known->id)
             ->where(function ($query) {
                 $query->whereNull('status')->orWhere('status', '<>', 'failed');
@@ -230,6 +353,16 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
+        $this->createFailureLineItem($conversation, $summary);
+    }
+
+    /**
+     * Shared by both `recordFailure()` paths above: a `failed` event for an
+     * already-known row, and one that had to create the row itself because
+     * no `sent` had been processed yet.
+     */
+    protected function createFailureLineItem(Conversation $conversation, $summary)
+    {
         $lineItem = new Thread();
         $lineItem->conversation_id = $conversation->id;
         $lineItem->user_id         = null;
@@ -243,5 +376,69 @@ class ReconcileOutboundMessage implements ShouldQueue
         $lineItem->source_type     = Thread::SOURCE_TYPE_API;
         $lineItem->customer_id     = $conversation->customer_id;
         $lineItem->save();
+    }
+
+    /**
+     * Builds the human-readable error summary from
+     * `message.kapso.statuses[0].errors`, stored on the row and quoted in
+     * the line item.
+     */
+    protected function failureSummary(array $message)
+    {
+        $errors = $message['kapso']['statuses'][0]['errors'] ?? [];
+        $parts  = [];
+
+        foreach ($errors as $error) {
+            $parts[] = trim(($error['code'] ?? '').' '.($error['title'] ?? '').' — '.($error['message'] ?? ''));
+        }
+
+        return $parts ? implode('; ', $parts) : __('Delivery failed');
+    }
+
+    /**
+     * Most recent conversation this account has exchanged messages with the
+     * given number. Used to attach both a foreign send and an unknown
+     * delivery failure to the right conversation.
+     *
+     * Deliberately does not filter on conversation status: a foreign send or
+     * a delayed failure can arrive after an agent has closed the
+     * conversation, and this still attaches it to that same closed
+     * conversation rather than dropping it or opening a new one. That is a
+     * defensible tradeoff for Stage 1, not an oversight.
+     */
+    protected function resolveConversationId(KapsoAccount $account, $e164)
+    {
+        return KapsoMessage::where('contact_phone', $e164)
+            ->where('account_id', $account->id)
+            ->whereNotNull('conversation_id')
+            ->orderBy('id', 'desc')
+            ->value('conversation_id');
+    }
+
+    /**
+     * Prefer the typed text; fall back to Kapso's rendered representation,
+     * and finally to a translatable placeholder naming the message type —
+     * matching ProcessInboundMessage::rawText(), which guards the same
+     * "text.body missing" situation that would otherwise leave an
+     * essentially blank thread for a template or media send.
+     */
+    protected function messageBody(array $message)
+    {
+        $text = $message['text']['body'] ?? null;
+
+        if (is_scalar($text) && trim((string) $text) !== '') {
+            return (string) $text;
+        }
+
+        $content = $message['kapso']['content'] ?? null;
+
+        if (is_scalar($content) && trim((string) $content) !== '') {
+            return (string) $content;
+        }
+
+        $type = $message['type'] ?? null;
+        $type = is_scalar($type) ? (string) $type : 'unknown';
+
+        return __('WhatsApp message: :type', ['type' => $type]);
     }
 }

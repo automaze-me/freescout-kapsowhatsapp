@@ -58,6 +58,20 @@ class ReconcileOutboundTest extends TestCase
         ];
     }
 
+    protected function failedPayload(string $wamid): array
+    {
+        $payload = $this->sentPayload($wamid);
+
+        $payload['message']['kapso']['status']   = 'failed';
+        $payload['message']['kapso']['statuses'] = [[
+            'status' => 'failed',
+            'errors' => [['code' => 131047, 'title' => 'Re-engagement message',
+                          'message' => 'Message failed to send because more than 24 hours have passed']],
+        ]];
+
+        return $payload;
+    }
+
     public function test_our_own_send_is_ignored()
     {
         $account = $this->makeAccount();
@@ -116,15 +130,7 @@ class ReconcileOutboundTest extends TestCase
             'contact_phone'   => '+4915166666666',
         ]);
 
-        $payload = $this->sentPayload('wamid.failing');
-        $payload['message']['kapso']['status']   = 'failed';
-        $payload['message']['kapso']['statuses'] = [[
-            'status' => 'failed',
-            'errors' => [['code' => 131047, 'title' => 'Re-engagement message',
-                          'message' => 'Message failed to send because more than 24 hours have passed']],
-        ]];
-
-        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $payload))->handle();
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $this->failedPayload('wamid.failing')))->handle();
 
         $record = KapsoMessage::where('wamid', 'wamid.failing')->firstOrFail();
         $this->assertSame('failed', $record->status);
@@ -142,5 +148,129 @@ class ReconcileOutboundTest extends TestCase
         (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.orphan')))->handle();
 
         $this->assertFalse(KapsoMessage::seen('wamid.orphan'));
+    }
+
+    /**
+     * The critical ordering bug: Kapso does not guarantee `sent` arrives
+     * before `failed`, and some error classes (e.g. 131047, used here) may
+     * never produce a `sent` event at all. Before the fix, recordFailure()
+     * started with `if (!$known) { return; }`, so a `failed` event with no
+     * prior row vanished with no thread, no line item, and not even a log
+     * line — and a later `sent` for the same wamid would then record the
+     * message as an ordinary successful outbound thread.
+     */
+    public function test_a_failed_event_with_no_prior_row_creates_a_thread_and_a_line_item()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+        $threadsBefore  = Thread::where('conversation_id', $conversationId)->count();
+
+        $this->assertFalse(KapsoMessage::seen('wamid.failed-first'), 'precondition: no row exists yet for this wamid');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $this->failedPayload('wamid.failed-first')))->handle();
+
+        $record = KapsoMessage::where('wamid', 'wamid.failed-first')->firstOrFail();
+        $this->assertSame(KapsoMessage::DIRECTION_OUTBOUND, $record->direction);
+        $this->assertFalse((bool) $record->is_reaction);
+        $this->assertSame('failed', $record->status);
+        $this->assertStringContainsString('131047', (string) $record->error);
+        $this->assertEquals($conversationId, $record->conversation_id);
+        $this->assertNotNull($record->thread_id);
+
+        $threads = Thread::where('conversation_id', $conversationId)->orderBy('id')->get();
+        $this->assertSame($threadsBefore + 2, $threads->count(),
+            'a failed send with no prior row must produce both an outbound thread and a line item');
+
+        $messageThread = Thread::find($record->thread_id);
+        $this->assertSame(Thread::TYPE_MESSAGE, (int) $messageThread->type);
+        $this->assertStringContainsString('Reply from elsewhere', $messageThread->body);
+
+        $lineItem = Thread::where('conversation_id', $conversationId)
+            ->where('type', Thread::TYPE_LINEITEM)->orderBy('id', 'desc')->first();
+        $this->assertNotNull($lineItem, 'a delivery failure must be visible on the conversation even with no prior row');
+        $this->assertStringContainsString('131047', $lineItem->body);
+    }
+
+    public function test_a_failed_event_for_an_unknown_conversation_is_dropped_quietly()
+    {
+        $account = $this->makeAccount();
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $this->failedPayload('wamid.failed-orphan')))->handle();
+
+        $this->assertFalse(KapsoMessage::seen('wamid.failed-orphan'));
+    }
+
+    /**
+     * A `sent` event processed after a `failed` event for the same wamid
+     * (the sibling event finally arriving, or a retried job catching up)
+     * must not resurrect the message as delivered.
+     */
+    public function test_a_sent_event_after_a_failed_event_does_not_resurrect_the_message()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $this->failedPayload('wamid.late-sent')))->handle();
+
+        $threadsAfterFailure = Thread::where('conversation_id', $conversationId)->count();
+        $lineItemsAfterFailure = Thread::where('conversation_id', $conversationId)
+            ->where('type', Thread::TYPE_LINEITEM)->count();
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.late-sent')))->handle();
+
+        $record = KapsoMessage::where('wamid', 'wamid.late-sent')->firstOrFail();
+        $this->assertSame('failed', $record->status, 'a later sent event must not clear the failed status');
+        $this->assertNotNull($record->error, 'a later sent event must not wipe the recorded error');
+
+        $this->assertSame($threadsAfterFailure, Thread::where('conversation_id', $conversationId)->count(),
+            'a later sent event must not add a second thread');
+        $this->assertSame($lineItemsAfterFailure, Thread::where('conversation_id', $conversationId)
+            ->where('type', Thread::TYPE_LINEITEM)->count(),
+            'a later sent event must not add a second line item');
+    }
+
+    public function test_a_duplicate_sent_event_produces_exactly_one_thread()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+        $threadsBefore  = Thread::where('conversation_id', $conversationId)->count();
+
+        $payload = $this->sentPayload('wamid.dup-sent');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $payload))->handle();
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $payload))->handle();
+
+        $this->assertSame($threadsBefore + 1, Thread::where('conversation_id', $conversationId)->count(),
+            'a duplicate delivery of the same sent event must not produce a second thread');
+        $this->assertSame(1, KapsoMessage::where('wamid', 'wamid.dup-sent')->count());
+    }
+
+    public function test_a_duplicate_failed_event_produces_exactly_one_line_item()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+
+        $payload = $this->failedPayload('wamid.dup-failed');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $payload))->handle();
+
+        $lineItemsAfterFirst = Thread::where('conversation_id', $conversationId)
+            ->where('type', Thread::TYPE_LINEITEM)->count();
+        $this->assertSame(1, $lineItemsAfterFirst);
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $payload))->handle();
+
+        $this->assertSame($lineItemsAfterFirst, Thread::where('conversation_id', $conversationId)
+            ->where('type', Thread::TYPE_LINEITEM)->count(),
+            'a duplicate delivery of the same failed event must not produce a second line item');
+        $this->assertSame(1, KapsoMessage::where('wamid', 'wamid.dup-failed')->count());
     }
 }

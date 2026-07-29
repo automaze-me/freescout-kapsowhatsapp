@@ -38,6 +38,29 @@ yet sent from FreeScout.
 
 6. Send yourself a WhatsApp message and check the mailbox.
 
+## Outbound event reconciliation
+
+Kapso also delivers `whatsapp.message.sent` and `whatsapp.message.failed` to the webhook. These
+exist so FreeScout's copy of the conversation stays complete even while something *other* than
+FreeScout is sending WhatsApp messages for the same number — during the Stage 1 parallel run
+that is the n8n bridge, or an agent using Kapso's own inbox directly. (Stage 2 adds native
+sending from FreeScout itself; see "Stage 1 done" below.)
+
+- **A send made outside FreeScout** appears as a normal-looking outbound thread on the matching
+  conversation, marked *"Sent outside FreeScout"* so it's clear the reply did not originate here.
+  A send FreeScout itself already knows about (once Stage 2 lands) is recognised by its message
+  id and not duplicated.
+- **A delivery failure** — the customer-service window has closed, the number is invalid, etc. —
+  is posted as a line item on the conversation with Kapso's error code and message, so a failed
+  send is never silently invisible. This is posted whether or not the corresponding `sent` event
+  has been processed yet: Kapso does not guarantee event ordering, so a failure can arrive before
+  its sibling send, or the send event may never arrive at all for some error classes. Once a
+  message is marked failed this way, a `sent` event for the same message id can never overwrite
+  that outcome.
+- The conversation a foreign send or failure attaches to is found by matching the WhatsApp
+  number against this module's own message history for the account, without regard to whether
+  that conversation is currently open or closed.
+
 ## Channel code
 
 This module registers communication channel **102**. Codes 100 and 101 are used by the
