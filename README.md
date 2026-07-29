@@ -17,30 +17,24 @@ yet sent from FreeScout.
 1. Extract into `Modules/KapsoWhatsApp/`.
 2. Activate the module in **Manage → Modules**.
 3. Go to **Manage → WhatsApp Accounts** and add an account: name, Phone Number ID, Kapso API key,
-   a webhook secret you choose, and the mailbox that WhatsApp conversations should land in.
-4. Copy the webhook URL shown on that page.
-5. Register the webhook with Kapso, using the same secret:
+   and the mailbox that WhatsApp conversations should land in.
+4. Click **Register with Kapso** on that account's row. The module generates the webhook secret,
+   registers the webhook against your phone number, and subscribes to exactly the events it needs.
+   You never copy a secret or a URL by hand, and FreeScout and Kapso cannot end up holding
+   different secrets.
+5. Send yourself a WhatsApp message and check the mailbox.
 
-   ```bash
-   curl -X POST "https://api.kapso.ai/platform/v1/whatsapp/phone_numbers/<PHONE_NUMBER_ID>/webhooks" \
-     -H "X-API-Key: $KAPSO_API_KEY" -H "Content-Type: application/json" \
-     -d '{"whatsapp_webhook":{
-           "url":"https://your-freescout/kapso-whatsapp/webhook",
-           "kind":"kapso",
-           "secret_key":"<THE SAME SECRET>",
-           "payload_version":"v2",
-           "active":true,
-           "events":["whatsapp.message.received","whatsapp.message.sent","whatsapp.message.failed"]
-         }}'
-   ```
+FreeScout must be reachable from the public internet for Kapso to deliver anything. If it is not,
+the accounts page says so.
 
-   Message events are delivered **only** to phone-number webhooks, not project webhooks.
+The **Webhook** column shows what Kapso currently thinks. Kapso pauses a webhook automatically
+after a run of failed deliveries and never resumes it on its own, so a paused webhook shows up
+here as *Paused by Kapso*, together with the HTTP status your install returned, and a **Re-enable**
+button. Registering again is always safe: it adopts the existing webhook rather than creating a
+second one, and re-issues the secret.
 
-   Do **not** enable Kapso's message buffering (`buffer_enabled`) on this webhook: with buffering
-   on, the payload becomes a batch envelope with no top-level `phone_number_id`, so the middleware
-   rejects every delivery with a 403 and Kapso auto-pauses the webhook within about 15 minutes.
-
-6. Send yourself a WhatsApp message and check the mailbox.
+Webhooks belonging to anything else on the same number — an n8n bridge, another helpdesk — are
+never read, changed or deleted by this module.
 
 ## Configuration
 

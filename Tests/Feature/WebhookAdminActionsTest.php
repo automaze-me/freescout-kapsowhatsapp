@@ -202,4 +202,89 @@ class WebhookAdminActionsTest extends TestCase
 
         $this->assertNotNull($account->fresh()->webhook_error);
     }
+
+    public function test_an_unregistered_account_renders_a_register_button()
+    {
+        $this->fakeResponses([]);
+        $account = $this->makeAccount();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.register', ['id' => $account->id]), $html);
+        $this->assertStringContainsString('Not registered', $html);
+        $this->assertStringNotContainsString('curl', strtolower($html));
+    }
+
+    public function test_a_paused_account_renders_the_reason_and_a_resume_button()
+    {
+        $this->fakeResponses([]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = false;
+        $account->webhook_checked_at = now();
+        $account->webhook_error      = 'Kapso has paused this webhook after failed deliveries.';
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]), $html);
+        $this->assertStringContainsString('Kapso has paused this webhook after failed deliveries.', $html);
+    }
+
+    public function test_an_active_account_renders_as_active_with_no_resume_button()
+    {
+        $this->fakeResponses([]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = true;
+        $account->webhook_checked_at = now();
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]), $html);
+        $this->assertStringContainsString(route('kapsowhatsapp.webhook.refresh', ['id' => $account->id]), $html);
+    }
+
+    public function test_a_webhook_registered_at_a_different_url_is_flagged()
+    {
+        $this->fakeResponses([]);
+
+        $account                     = $this->makeAccount();
+        $account->webhook_id         = 'wh-1';
+        $account->webhook_active     = true;
+        $account->webhook_url        = 'https://old.example.com/kapso-whatsapp/webhook';
+        $account->webhook_checked_at = now();
+        $account->save();
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('https://old.example.com/kapso-whatsapp/webhook', $html);
+        $this->assertStringContainsString('Register again', $html);
+    }
+
+    public function test_the_account_form_no_longer_asks_for_a_webhook_secret()
+    {
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.create'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString('name="webhook_secret"', $html);
+        $this->assertStringContainsString('generated', strtolower($html));
+    }
 }

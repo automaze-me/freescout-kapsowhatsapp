@@ -12,7 +12,7 @@
         <div class="form-group{{ $errors->has('name') ? ' has-error' : '' }}">
             <label class="col-sm-2 control-label">{{ __('Name') }}</label>
             <div class="col-sm-6">
-                <input type="text" class="form-control" name="name" value="{{ old('name', $account->name) }}" required>
+                <input type="text" class="form-control" name="name" value="{{ old('name', $account->name) ?? '' }}" required>
                 @include('partials/field_error', ['field' => 'name'])
             </div>
         </div>
@@ -20,7 +20,7 @@
         <div class="form-group{{ $errors->has('phone_number_id') ? ' has-error' : '' }}">
             <label class="col-sm-2 control-label">{{ __('Phone Number ID') }}</label>
             <div class="col-sm-6">
-                <input type="text" class="form-control" name="phone_number_id" value="{{ old('phone_number_id', $account->phone_number_id) }}" required>
+                <input type="text" class="form-control" name="phone_number_id" value="{{ old('phone_number_id', $account->phone_number_id) ?? '' }}" required>
                 @include('partials/field_error', ['field' => 'phone_number_id'])
             </div>
         </div>
@@ -28,7 +28,7 @@
         <div class="form-group">
             <label class="col-sm-2 control-label">{{ __('Business Account ID') }}</label>
             <div class="col-sm-6">
-                <input type="text" class="form-control" name="business_account_id" value="{{ old('business_account_id', $account->business_account_id) }}">
+                <input type="text" class="form-control" name="business_account_id" value="{{ old('business_account_id', $account->business_account_id) ?? '' }}">
             </div>
         </div>
 
@@ -40,11 +40,12 @@
             </div>
         </div>
 
-        <div class="form-group{{ $errors->has('webhook_secret') ? ' has-error' : '' }}">
+        <div class="form-group">
             <label class="col-sm-2 control-label">{{ __('Webhook Secret') }}</label>
             <div class="col-sm-6">
-                <input type="password" class="form-control" name="webhook_secret" autocomplete="new-password" @if (!$account->id) required @endif>
-                @include('partials/field_error', ['field' => 'webhook_secret'])
+                <p class="form-control-static text-muted">
+                    {{ __('Generated automatically when you register the webhook with Kapso, so FreeScout and Kapso can never hold different secrets.') }}
+                </p>
             </div>
         </div>
 
