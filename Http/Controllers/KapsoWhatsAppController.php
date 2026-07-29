@@ -152,14 +152,13 @@ class KapsoWhatsAppController extends Controller
 
     /**
      * phone_number_id is unique per account, so a number already bound to
-     * another account is not a valid choice -- except on that account's own
-     * edit form.
+     * another account is not a valid choice on the create form. (The edit
+     * form has no such choice to make at all -- the number is immutable
+     * after creation.)
      */
-    protected function takenPhoneNumberIds($exceptAccountId = null)
+    protected function takenPhoneNumberIds()
     {
-        return KapsoAccount::when($exceptAccountId, function ($query) use ($exceptAccountId) {
-            return $query->where('id', '<>', $exceptAccountId);
-        })->pluck('phone_number_id')->all();
+        return KapsoAccount::pluck('phone_number_id')->all();
     }
 
     public function create()
@@ -189,7 +188,7 @@ class KapsoWhatsAppController extends Controller
 
         $account = new KapsoAccount();
 
-        list($applied, $error) = $this->applyRequest($account, $request);
+        list($applied, $error) = $this->applyCreateRequest($account, $request);
 
         if (!$applied) {
             return redirect()->back()->withInput()
@@ -203,23 +202,33 @@ class KapsoWhatsAppController extends Controller
         return redirect()->route('kapsowhatsapp.settings');
     }
 
+    /**
+     * No availableNumbers() call: the number is immutable after creation, so
+     * the edit page has nothing to ask Kapso for. That makes it render with
+     * zero outbound HTTP -- identically whether Kapso is up, down or slow --
+     * which is the whole point: an admin who needs to rename, re-mailbox or
+     * deactivate an account during a Kapso outage must still get a form.
+     */
     public function edit($id)
     {
         $this->authorizeAdmin();
 
         $account = KapsoAccount::findOrFail($id);
 
-        list($numbers, $numbersError) = $this->availableNumbers();
-
         return view('kapsowhatsapp::account_form', [
-            'account'             => $account,
-            'mailboxes'           => Mailbox::orderBy('name')->get(),
-            'numbers'             => $numbers,
-            'numbersError'        => $numbersError,
-            'takenPhoneNumberIds' => $this->takenPhoneNumberIds($account->id),
+            'account'   => $account,
+            'mailboxes' => Mailbox::orderBy('name')->get(),
         ]);
     }
 
+    /**
+     * phone_number_id and business_account_id are not read from the request
+     * at all on this path -- not looked up, not validated, just never
+     * touched. The number is the account's identity once created; an admin
+     * who wants a different number adds a new account row instead. That
+     * also means there is no Kapso call here and so nothing that can fail:
+     * this always either validates and saves, or fails validation.
+     */
     public function update(Request $request, $id)
     {
         $this->authorizeAdmin();
@@ -227,17 +236,20 @@ class KapsoWhatsAppController extends Controller
         $account = KapsoAccount::findOrFail($id);
 
         $this->validate($request, [
-            'name'            => 'nullable|string|max:191',
-            'phone_number_id' => 'required|string|max:64|unique:kapso_whatsapp_accounts,phone_number_id,'.$account->id,
-            'mailbox_id'      => 'required|integer|exists:mailboxes,id',
+            'name'       => 'nullable|string|max:191',
+            'mailbox_id' => 'required|integer|exists:mailboxes,id',
         ]);
 
-        list($applied, $error) = $this->applyRequest($account, $request);
+        $name = trim((string) $request->input('name'));
 
-        if (!$applied) {
-            return redirect()->back()->withInput()
-                ->withErrors(['phone_number_id' => $error]);
+        // Blank means "leave the existing name alone" -- unlike create,
+        // there is no Kapso record left to re-derive a name from here.
+        if ($name !== '') {
+            $account->name = $name;
         }
+
+        $account->mailbox_id = (int) $request->input('mailbox_id');
+        $account->is_active  = (bool) $request->input('is_active');
 
         $account->save();
 
@@ -363,9 +375,10 @@ class KapsoWhatsAppController extends Controller
     }
 
     /**
-     * The two Meta identifiers are looked up in Kapso's own list rather than
-     * read from the request, so a tampered form cannot bind an account to an
-     * arbitrary phone number or business account.
+     * Create-only: the two Meta identifiers are resolved from Kapso's own
+     * list rather than read from the request, so a tampered form cannot bind
+     * an account to an arbitrary phone number or business account. On update
+     * they are immutable instead -- see update(), which never calls this.
      *
      * Returns [success, error]. Kapso being unreachable and the submitted
      * number simply not being in the project are different failures and must
@@ -377,7 +390,7 @@ class KapsoWhatsAppController extends Controller
      * The webhook secret is not a form field at all: WebhookRegistrar mints it
      * at registration time so FreeScout and Kapso cannot hold different values.
      */
-    protected function applyRequest(KapsoAccount $account, Request $request)
+    protected function applyCreateRequest(KapsoAccount $account, Request $request)
     {
         list($numbers, $numbersError) = $this->availableNumbers();
 

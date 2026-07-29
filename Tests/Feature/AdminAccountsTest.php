@@ -45,10 +45,11 @@ class AdminAccountsTest extends TestCase
     }
 
     /**
-     * store()/update() now resolve phone_number_id and business_account_id
-     * from Kapso's own list (Task 3) rather than accepting either as free
-     * text, so any test that reaches applyRequest() needs a fake list
-     * containing the id it posts.
+     * store() resolves phone_number_id and business_account_id from Kapso's
+     * own list (Task 3) rather than accepting either as free text, so any
+     * test that reaches applyCreateRequest() needs a fake list containing the
+     * id it posts. update() never contacts Kapso at all -- the number is
+     * immutable after creation -- so update-path tests do not need this.
      */
     protected function numbersResponse(array $records): Response
     {
@@ -129,7 +130,7 @@ class AdminAccountsTest extends TestCase
         ];
 
         // Only the first POST reaches Kapso: the second is rejected by the
-        // uniqueness rule before applyRequest() ever calls availableNumbers().
+        // uniqueness rule before applyCreateRequest() ever calls availableNumbers().
         $this->fakeResponses([$this->numbersResponse([
             ['phone_number_id' => '555000111', 'business_account_id' => 'waba-1'],
         ])]);
@@ -223,9 +224,7 @@ class AdminAccountsTest extends TestCase
     public function test_a_webhook_secret_posted_to_the_form_is_ignored()
     {
         $account = $this->makeAccount(['webhook_secret' => 'original-webhook-secret']);
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => $account->phone_number_id, 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses([]);
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => $account->name,
@@ -247,9 +246,7 @@ class AdminAccountsTest extends TestCase
     public function test_an_api_key_posted_to_the_form_is_ignored()
     {
         $account = $this->makeAccount();
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => $account->phone_number_id, 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses([]);
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => $account->name,
@@ -293,14 +290,12 @@ class AdminAccountsTest extends TestCase
         $this->assertNull(KapsoAccount::find($account->id));
     }
 
-    // --- Update validation: unique phone_number_id excludes the current row ---
+    // --- Update: the number is immutable ---
 
-    public function test_update_allows_keeping_its_own_phone_number_id()
+    public function test_update_can_rename_an_account()
     {
         $account = $this->makeAccount(['phone_number_id' => '700000000000001']);
-        $this->fakeResponses([$this->numbersResponse([
-            ['phone_number_id' => '700000000000001', 'business_account_id' => 'waba-1'],
-        ])]);
+        $this->fakeResponses([]);
 
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => 'Renamed Again',
@@ -311,19 +306,25 @@ class AdminAccountsTest extends TestCase
 
         $response->assertRedirect(route('kapsowhatsapp.settings'));
         $this->assertSame('Renamed Again', $account->fresh()->name);
+        $this->assertSame('700000000000001', $account->fresh()->phone_number_id);
+        $this->assertCount(0, $this->history, 'update() must never contact Kapso');
     }
 
-    public function test_update_rejects_another_accounts_phone_number_id()
+    /**
+     * Replaces the old uniqueness-on-update test: with phone_number_id
+     * no longer read from the request at all, posting another account's
+     * number id is not "rejected" -- there is no validation left to reject
+     * it. It just changes nothing, the same as posting any other value would.
+     */
+    public function test_posting_another_accounts_phone_number_id_on_update_changes_nothing()
     {
         $accountA = $this->makeAccount(['phone_number_id' => '700000000000002']);
         $accountB = $this->makeAccount(['phone_number_id' => '700000000000003']);
 
-        // The uniqueness rule rejects this before applyRequest() ever calls
-        // availableNumbers(), so no Kapso call is expected here. Install an
-        // empty fake queue rather than none at all: with no fake installed,
-        // an unexpected call would silently fall back to a real Guzzle
-        // client and could hang on a genuine outbound request while still
-        // passing -- an empty queue makes that regression throw instead.
+        // Install an empty fake queue rather than none at all: with no fake
+        // installed, an unexpected call would silently fall back to a real
+        // Guzzle client and could hang on a genuine outbound request while
+        // still passing -- an empty queue makes that regression throw instead.
         $this->fakeResponses([]);
 
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $accountA->id]), [
@@ -333,7 +334,8 @@ class AdminAccountsTest extends TestCase
             'is_active'       => 1,
         ]);
 
-        $response->assertSessionHasErrors('phone_number_id');
+        $response->assertStatus(302)->assertSessionMissing('errors');
         $this->assertSame('700000000000002', $accountA->fresh()->phone_number_id);
+        $this->assertCount(0, $this->history);
     }
 }

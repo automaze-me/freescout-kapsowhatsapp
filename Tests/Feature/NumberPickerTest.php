@@ -160,30 +160,6 @@ class NumberPickerTest extends TestCase
         $this->assertMatchesRegularExpression('/<option[^>]*value="222"(?![^>]*disabled)/', $html);
     }
 
-    public function test_editing_keeps_the_accounts_own_number_selectable()
-    {
-        Settings::setApiKey('key-abc');
-
-        $account = new KapsoAccount();
-        $account->fill([
-            'name'            => 'Existing',
-            'phone_number_id' => '111',
-            'mailbox_id'      => $this->testMailbox()->id,
-            'is_active'       => true,
-        ]);
-        $account->save();
-
-        $this->fakeResponses([$this->numbersResponse($this->twoNumbers())]);
-
-        $html = $this->actingAs($this->adminUser())
-            ->get(route('kapsowhatsapp.edit', ['id' => $account->id]))
-            ->assertStatus(200)
-            ->getContent();
-
-        $this->assertMatchesRegularExpression('/<option[^>]*value="111"[^>]*selected/', $html);
-        $this->assertDoesNotMatchRegularExpression('/<option[^>]*value="111"[^>]*disabled/', $html);
-    }
-
     public function test_a_blank_name_is_filled_in_from_the_selected_number()
     {
         Settings::setApiKey('key-abc');
@@ -254,7 +230,14 @@ class NumberPickerTest extends TestCase
         $this->assertNull(KapsoAccount::where('phone_number_id', '111')->first());
     }
 
-    public function test_a_kapso_outage_on_update_reports_the_outage_not_a_bad_number()
+    /**
+     * update() no longer calls Kapso at all -- the number is immutable after
+     * creation, so there is nothing left to look up. The edit page must
+     * therefore render with zero outbound HTTP, whether Kapso is up, down or
+     * slow: an empty fake queue makes any accidental call throw loudly
+     * instead of silently reaching a real Guzzle client.
+     */
+    public function test_the_edit_page_renders_during_a_kapso_outage()
     {
         Settings::setApiKey('key-abc');
 
@@ -267,20 +250,133 @@ class NumberPickerTest extends TestCase
         ]);
         $account->save();
 
-        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+        $this->fakeResponses([]);
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.edit', ['id' => $account->id]))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('111', $html);
+        $this->assertStringContainsString('name="name"', $html);
+        $this->assertStringContainsString('name="mailbox_id"', $html);
+        $this->assertStringContainsString('name="is_active"', $html);
+        $this->assertStringNotContainsString('<select name="phone_number_id"', $html);
+        $this->assertCount(0, $this->history, 'the edit page must not make any outbound call');
+    }
+
+    /**
+     * This is the test that captures why the user wanted this: during a
+     * Kapso outage an admin must still be able to deactivate an account --
+     * that is exactly the moment they most need to.
+     */
+    public function test_an_account_can_be_deactivated_during_an_outage()
+    {
+        Settings::setApiKey('key-abc');
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Existing',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->save();
+
+        $this->fakeResponses([]);
 
         $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
-            'name'            => 'Existing',
+            'name'       => 'Existing',
+            'mailbox_id' => $account->mailbox_id,
+            // is_active intentionally absent, as an unchecked checkbox posts nothing.
+        ])->assertStatus(302);
+
+        $this->assertFalse((bool) $account->fresh()->is_active);
+        $this->assertCount(0, $this->history, 'deactivating must not depend on Kapso being reachable');
+    }
+
+    /**
+     * The number is the account's identity once created. A tampered or
+     * merely stale posted value must be ignored entirely -- not looked up,
+     * not validated, not even read -- so this asserts zero HTTP requests too:
+     * update() has nothing to check the posted id against any more.
+     *
+     * The fake queue below deliberately answers with a record for the
+     * *posted* number ('222'), not the account's own: were update() still
+     * looking the posted id up (the old contract), this response would let
+     * it succeed and apply the tamper, so this is a genuine test of the new
+     * contract rather than one that only happens to pass either way.
+     */
+    public function test_a_posted_phone_number_id_on_update_is_ignored_entirely()
+    {
+        Settings::setApiKey('key-abc');
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'                => 'Existing',
+            'phone_number_id'     => '111',
+            'business_account_id' => 'waba-1',
+            'mailbox_id'          => $this->testMailbox()->id,
+            'is_active'           => true,
+        ]);
+        $account->save();
+
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '222', 'business_account_id' => 'waba-TAMPERED'],
+        ])]);
+
+        $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
+            'name'                => 'Existing',
+            'phone_number_id'     => '222',
+            'business_account_id' => 'waba-TAMPERED',
+            'mailbox_id'          => $account->mailbox_id,
+            'is_active'           => 1,
+        ])->assertStatus(302);
+
+        $fresh = $account->fresh();
+        $this->assertSame('111', $fresh->phone_number_id);
+        $this->assertSame('waba-1', $fresh->business_account_id);
+        $this->assertCount(0, $this->history, 'update() must not look the posted id up at all');
+    }
+
+    /**
+     * update()'s blank-name rule is simpler than create's: there is no
+     * Kapso record to re-derive a name from any more, so blank just means
+     * "leave the existing name alone". The fake queue answers with a
+     * *different* name for the account's own number: were update() still
+     * re-deriving a blank name from Kapso (the old, create-only contract),
+     * the account would end up renamed to it instead of keeping its name.
+     */
+    public function test_a_blank_name_on_update_keeps_the_existing_name()
+    {
+        Settings::setApiKey('key-abc');
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Existing Name',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->save();
+
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '111', 'verified_name' => 'Kapso-Derived Name'],
+        ])]);
+
+        $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
+            'name'            => '',
+            // Posted so the request passes the old contract's "required"
+            // validation too -- otherwise it would fail validation and never
+            // reach the rename logic at all, hiding the real difference this
+            // test is meant to catch.
             'phone_number_id' => '111',
             'mailbox_id'      => $account->mailbox_id,
             'is_active'       => 1,
-        ])->assertStatus(302)->assertSessionHasErrors('phone_number_id');
+        ])->assertStatus(302);
 
-        $message = $this->sessionErrorMessage('phone_number_id');
-
-        $this->assertStringContainsString('Kapso', $message);
-        $this->assertStringNotContainsString('is not one of the WhatsApp numbers', $message);
-        $this->assertSame('Existing', $account->fresh()->name);
+        $this->assertSame('Existing Name', $account->fresh()->name);
+        $this->assertCount(0, $this->history, 'update() must not consult Kapso even to fill in a blank name');
     }
 
     public function test_an_admin_can_save_the_api_key()

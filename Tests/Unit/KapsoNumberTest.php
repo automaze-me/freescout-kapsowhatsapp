@@ -133,10 +133,10 @@ class KapsoNumberTest extends TestCase
     }
 
     /**
-     * displayNumber() is the stable last-resort value applyRequest() names an
-     * account with -- unlike label(), it must never carry a quality rating,
-     * which is a moment-in-time signal that would otherwise get baked into a
-     * stored name.
+     * displayNumber() is the stable last-resort value applyCreateRequest()
+     * names an account with -- unlike label(), it must never carry a quality
+     * rating, which is a moment-in-time signal that would otherwise get
+     * baked into a stored name.
      */
     public function test_display_number_never_includes_a_quality_rating()
     {

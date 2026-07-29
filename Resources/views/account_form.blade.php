@@ -10,7 +10,7 @@
 <div class="row-container form-container">
     <div class="row">
         <div class="col-xs-12">
-            @if ($numbersError)
+            @if (isset($numbersError) && $numbersError)
                 <div class="alert alert-warning margin-top">{{ $numbersError }}</div>
                 <p>
                     <a href="{{ route('kapsowhatsapp.settings') }}" class="btn btn-primary">{{ __('Back to WhatsApp Accounts') }}</a>
@@ -19,6 +19,15 @@
             <form method="POST" action="{{ $account->id ? route('kapsowhatsapp.update', ['id' => $account->id]) : route('kapsowhatsapp.store') }}" class="form-horizontal margin-top">
                 {{ csrf_field() }}
 
+                @if ($account->id)
+                <div class="form-group">
+                    <label class="col-sm-2 control-label">{{ __('WhatsApp Number') }}</label>
+                    <div class="col-sm-6">
+                        <p class="form-control-static"><code>{{ $account->phone_number_id }}</code></p>
+                        <p class="text-help">{{ __('The number cannot be changed. To use a different number, add it as a new entry.') }}</p>
+                    </div>
+                </div>
+                @else
                 <div class="form-group{{ $errors->has('phone_number_id') ? ' has-error' : '' }}">
                     <label class="col-sm-2 control-label">{{ __('WhatsApp Number') }}</label>
                     <div class="col-sm-6">
@@ -40,6 +49,7 @@
                         <p class="text-help">{{ __('Numbers come from the Kapso project your API key belongs to.') }}</p>
                     </div>
                 </div>
+                @endif
 
                 <div class="form-group{{ $errors->has('mailbox_id') ? ' has-error' : '' }}">
                     <label class="col-sm-2 control-label">{{ __('Mailbox') }}</label>
