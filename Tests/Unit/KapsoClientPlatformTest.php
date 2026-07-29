@@ -272,4 +272,52 @@ class KapsoClientPlatformTest extends TestCase
 
         $this->assertLessThanOrEqual(10, count($history), 'a server that always returns a full page must not loop forever');
     }
+
+    /**
+     * A failure on page 2 must not be swallowed into "here are the 100
+     * records we got so far" -- that would present the admin with a
+     * silently truncated list indistinguishable from a genuinely complete
+     * one.
+     */
+    public function test_a_failure_partway_through_pagination_propagates_instead_of_truncating()
+    {
+        $full = array_map(function ($i) {
+            return ['phone_number_id' => (string) $i];
+        }, range(1, 100));
+
+        $history = [];
+        $client  = $this->clientWithHistory([
+            new Response(200, [], json_encode(['data' => $full])),
+            new Response(500, [], json_encode(['error' => 'Internal Server Error'])),
+        ], $history);
+
+        $this->expectException(KapsoApiException::class);
+
+        (new KapsoClient($this->account(), $client))->listPhoneNumbers();
+    }
+
+    /**
+     * A server that ignores per_page and answers with more than
+     * NUMBERS_PER_PAGE records in one page must not be mistaken for the
+     * "keeps sending full pages forever" case the page cap guards against:
+     * the loop should still terminate on the next short/empty page and
+     * every record collected along the way must come back.
+     */
+    public function test_listing_phone_numbers_terminates_when_a_page_is_larger_than_per_page()
+    {
+        $oversized = array_map(function ($i) {
+            return ['phone_number_id' => (string) $i];
+        }, range(1, 150));
+
+        $history = [];
+        $client  = $this->clientWithHistory([
+            new Response(200, [], json_encode(['data' => $oversized])),
+            new Response(200, [], json_encode(['data' => []])),
+        ], $history);
+
+        $numbers = (new KapsoClient($this->account(), $client))->listPhoneNumbers();
+
+        $this->assertCount(150, $numbers);
+        $this->assertCount(2, $history, 'an oversized page must not be mistaken for a stopping condition nor loop forever');
+    }
 }

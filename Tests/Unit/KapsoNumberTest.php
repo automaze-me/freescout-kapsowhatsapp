@@ -66,4 +66,69 @@ class KapsoNumberTest extends TestCase
     {
         $this->assertNull(KapsoNumber::find([['no_id' => true], 'not-an-array'], '111'));
     }
+
+    /**
+     * array_filter()'s default callback treats '' as the only thing to keep
+     * out, but a naive implementation reaching for the default callback would
+     * treat '0' as falsy too and silently drop it -- and a completely empty
+     * record must still read as something rather than a blank line.
+     */
+    public function test_a_completely_empty_record_never_produces_a_blank_label()
+    {
+        $label = KapsoNumber::label([]);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertStringContainsString('Unidentified', $label);
+    }
+
+    public function test_a_zero_string_id_is_not_dropped_as_falsy()
+    {
+        $label = KapsoNumber::label(['phone_number_id' => '0']);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertSame('0', $label);
+    }
+
+    public function test_a_zero_string_verified_name_is_not_dropped_as_falsy()
+    {
+        $label = KapsoNumber::label(['phone_number_id' => '123', 'verified_name' => '0']);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertSame('123 — 0', $label);
+    }
+
+    public function test_whitespace_only_field_values_are_treated_as_absent_not_used_verbatim()
+    {
+        $label = KapsoNumber::label([
+            'phone_number_id'      => '1234567890',
+            'display_phone_number' => '   ',
+            'verified_name'        => "\t\n",
+        ]);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertStringContainsString('1234567890', $label);
+        // No dangling separator left behind by a field that trimmed to nothing.
+        $this->assertStringNotContainsString('—  —', $label);
+        $this->assertStringNotContainsString(' — ', $label);
+    }
+
+    public function test_a_non_scalar_field_value_is_ignored_rather_than_used_or_fatal()
+    {
+        $label = KapsoNumber::label([
+            'phone_number_id'      => '1234567890',
+            'display_phone_number' => ['nested' => 'array'],
+            'verified_name'        => new \stdClass(),
+        ]);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertStringContainsString('1234567890', $label);
+    }
+
+    public function test_quality_rating_is_compared_case_insensitively()
+    {
+        $label = KapsoNumber::label(['phone_number_id' => '1', 'quality_rating' => 'red']);
+
+        $this->assertNotSame('', trim($label));
+        $this->assertStringContainsString('RED', $label);
+    }
 }
