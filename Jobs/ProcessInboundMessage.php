@@ -2,6 +2,7 @@
 
 namespace Modules\KapsoWhatsApp\Jobs;
 
+use App\Attachment;
 use App\Conversation;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
@@ -16,6 +17,7 @@ use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Services\ConversationResolver;
 use Modules\KapsoWhatsApp\Services\CustomerResolver;
+use Modules\KapsoWhatsApp\Services\KapsoClient;
 use Modules\KapsoWhatsApp\Services\PhoneNumber;
 
 class ProcessInboundMessage implements ShouldQueue
@@ -86,14 +88,23 @@ class ProcessInboundMessage implements ShouldQueue
 
         $body = $this->body($message);
 
+        // Media is downloaded here, before the transaction opens: it's
+        // network I/O (an HTTP round-trip to Kapso) and must never run while
+        // holding open a database transaction. The bytes are handed into the
+        // transaction below purely for the (fast, local) DB/disk write.
+        $mediaInfo  = $this->mediaInfo($message);
+        $mediaBytes = $mediaInfo ? (new KapsoClient($account))->downloadMedia($mediaInfo['url']) : null;
+
         $conversation = null;
         $thread       = null;
         $kapsoMessage = null;
+        $attachmentId = null;
 
         try {
             \DB::transaction(function () use (
                 $account, $mailbox, $customer, $message, $wamid, $body, $e164,
-                &$conversation, &$thread, &$kapsoMessage
+                $mediaInfo, $mediaBytes,
+                &$conversation, &$thread, &$kapsoMessage, &$attachmentId
             ) {
                 $resolved     = (new ConversationResolver())->resolve($customer, $mailbox, Conversation::subjectFromText($body['raw']));
                 $conversation = $resolved['conversation'];
@@ -115,6 +126,10 @@ class ProcessInboundMessage implements ShouldQueue
                 }
                 $thread->save();
 
+                if ($mediaInfo) {
+                    $attachmentId = $this->attachMedia($mediaInfo, $mediaBytes, $thread);
+                }
+
                 // The unique index on `wamid` is the real dedupe guard: if a
                 // concurrent job for the same message committed between our
                 // lookup above and here, this throws and the whole
@@ -129,6 +144,7 @@ class ProcessInboundMessage implements ShouldQueue
                     'direction'             => KapsoMessage::DIRECTION_INBOUND,
                     'status'                => $message['kapso']['status'] ?? 'received',
                     'contact_phone'         => $e164,
+                    'attachment_id'         => $attachmentId,
                 ]);
 
                 // Match core's ordering (Thread.php:1170/1227, FetchEmails.php:1246-1247/1318):
@@ -246,6 +262,92 @@ class ProcessInboundMessage implements ShouldQueue
                 'exception' => $e,
             ]);
         }
+    }
+
+    /**
+     * Extracts the media location/name/type Kapso attached to an inbound
+     * message, or null when the message carries no media. Pure data
+     * shaping — no I/O — so it can run before the network download and
+     * before the DB transaction alike.
+     */
+    protected function mediaInfo(array $message)
+    {
+        if (empty($message['kapso']['has_media'])) {
+            return null;
+        }
+
+        $mediaData = $message['kapso']['media_data'] ?? [];
+
+        return [
+            'url'       => $message['kapso']['media_url'] ?? ($mediaData['url'] ?? null),
+            'file_name' => $mediaData['filename'] ?? 'attachment',
+            'mime_type' => $mediaData['content_type'] ?? 'application/octet-stream',
+        ];
+    }
+
+    /**
+     * Turns already-downloaded media bytes into a FreeScout attachment on
+     * $thread. Takes the bytes rather than downloading them itself: the
+     * download is network I/O and must happen before `\DB::transaction()`
+     * opens, while this runs inside it (it only needs the thread's id and a
+     * couple of fast local writes). Returns the created attachment id, or
+     * null when there was no media or the download failed — either way
+     * $thread is annotated so the message itself is never lost.
+     *
+     * $type is passed as null (not `Attachment::typeNameToInt($mimeType)`):
+     * that helper keys off bare type names like "image", not full mime
+     * types like "image/jpeg", so it would silently misclassify every
+     * attachment as TYPE_OTHER. Passing null lets `Attachment::create()`
+     * fall back to its own `detectType()`, which parses the mime type
+     * correctly — the same convention core and ApiWebhooks use.
+     */
+    protected function attachMedia(array $mediaInfo, $bytes, Thread $thread)
+    {
+        if ($bytes === null) {
+            $this->noteMediaFailure($thread, $mediaInfo['file_name']);
+
+            return null;
+        }
+
+        $attachment = Attachment::create(
+            $mediaInfo['file_name'],
+            $mediaInfo['mime_type'],
+            null,
+            $bytes,
+            null,
+            false,
+            $thread->id,
+            null
+        );
+
+        if (!$attachment) {
+            $this->noteMediaFailure($thread, $mediaInfo['file_name']);
+
+            return null;
+        }
+
+        $thread->has_attachments = true;
+        $thread->save();
+
+        return $attachment->id;
+    }
+
+    /**
+     * Losing an attachment must never lose the message: instead of failing
+     * the job, the thread is still created/saved with its text, plus a note
+     * naming the file that could not be retrieved.
+     */
+    protected function noteMediaFailure(Thread $thread, $fileName)
+    {
+        \Log::warning('[KapsoWhatsApp] Could not retrieve attachment', [
+            'thread_id' => $thread->id,
+            'file_name' => $fileName,
+        ]);
+
+        $thread->body .= '<p><em>'
+            .__('Attachment could not be retrieved:').' '.e($fileName)
+            .'</em></p>';
+        $thread->save();
     }
 
     /**

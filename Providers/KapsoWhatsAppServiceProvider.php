@@ -43,5 +43,21 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
                 echo view('kapsowhatsapp::menu')->render();
             }
         });
+
+        // Core already renders a name and download link for every
+        // attachment (resources/views/conversations/partials/thread_attachments.blade.php);
+        // this adds an inline thumbnail for images only. Other attachment
+        // types keep core's default row untouched.
+        \Eventy::addAction('thread.attachment_append', function ($attachment, $thread, $conversation, $mailbox) {
+            if ((int) $attachment->type !== \App\Attachment::TYPE_IMAGE) {
+                return;
+            }
+
+            echo '<div class="kapsowhatsapp-attachment-preview">'
+                .'<a href="'.e($attachment->url()).'" target="_blank">'
+                .'<img src="'.e($attachment->url()).'" alt="'.e($attachment->file_name).'" '
+                .'style="max-width:200px;max-height:200px;border-radius:4px;margin-top:6px;">'
+                .'</a></div>';
+        }, 20, 4);
     }
 }
