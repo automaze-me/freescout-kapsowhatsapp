@@ -109,6 +109,50 @@ class DataModelTest extends TestCase
     }
 
     /**
+     * refresh() writes back whatever URL Kapso echoes, and Kapso's own
+     * normalisation -- a trailing slash added, host case changed, an
+     * explicit default port spelled out -- must not read as "moved", or the
+     * nag becomes permanent with no way to clear it. Path stays
+     * case-sensitive: that is a genuinely different endpoint.
+     */
+    public function test_webhook_url_moved_check_tolerates_cosmetic_differences()
+    {
+        $account = $this->makeAccountForWebhookState();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        $cases = [
+            'a trailing slash'  => ['https://help.example.com/kapso-whatsapp/webhook', 'https://help.example.com/kapso-whatsapp/webhook/'],
+            'host case'         => ['https://Help.Example.com/kapso-whatsapp/webhook', 'https://help.example.com/kapso-whatsapp/webhook'],
+            'scheme case'       => ['HTTPS://help.example.com/kapso-whatsapp/webhook', 'https://help.example.com/kapso-whatsapp/webhook'],
+            'default https port' => ['https://help.example.com:443/kapso-whatsapp/webhook', 'https://help.example.com/kapso-whatsapp/webhook'],
+            'default http port' => ['http://help.example.com:80/kapso-whatsapp/webhook', 'http://help.example.com/kapso-whatsapp/webhook'],
+        ];
+
+        foreach ($cases as $label => [$stored, $current]) {
+            $account->webhook_url = $stored;
+
+            $this->assertFalse($account->webhookUrlHasMoved($current), $label.' must not be reported as moved');
+        }
+    }
+
+    public function test_webhook_url_moved_check_still_catches_a_genuine_move()
+    {
+        $account              = $this->makeAccountForWebhookState();
+        $account->webhook_id  = 'wh-1';
+        $account->webhook_url = 'https://help.example.com/kapso-whatsapp/webhook';
+        $account->save();
+
+        $this->assertTrue($account->webhookUrlHasMoved('https://new.example.com/kapso-whatsapp/webhook'), 'a different host is a real move');
+        $this->assertTrue($account->webhookUrlHasMoved('https://help.example.com:8443/kapso-whatsapp/webhook'), 'a different non-default port is a real move');
+
+        // A differently-cased path is deliberately still "moved": only the
+        // scheme and host are normalised, because a path really can be
+        // case-sensitive on the server side.
+        $this->assertTrue($account->webhookUrlHasMoved('https://help.example.com/Kapso-Whatsapp/webhook'), 'a differently-cased path is a real move');
+    }
+
+    /**
      * An account that has never been registered must not be reported as
      * "paused" -- paused is a statement about a webhook that exists.
      */

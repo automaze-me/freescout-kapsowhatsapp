@@ -43,9 +43,50 @@ class WebhookRegistrar
         $this->client  = $client ?: new KapsoClient($account);
     }
 
+    /**
+     * FreeScout core calls forceScheme('https') but never forceRootUrl(), so
+     * a plain route('kapsowhatsapp.webhook') follows whatever host the
+     * current request came in on -- including a secondary hostname an admin
+     * happens to be browsing from (core supports multiple via
+     * APP_TRUSTED_HOSTS). Registering that URL would PATCH the live webhook
+     * to point at an address nobody else serves. The canonical
+     * config('app.url') is what must be registered, regardless of how this
+     * request arrived.
+     */
     public static function webhookUrl()
     {
-        return route('kapsowhatsapp.webhook');
+        $root = self::rootUrl();
+
+        return $root !== null
+            ? $root.route('kapsowhatsapp.webhook', [], false)
+            : route('kapsowhatsapp.webhook');
+    }
+
+    /**
+     * Scheme + host [+ port] from the canonical config('app.url'),
+     * deliberately dropping any path component: Helper::getSubdirectory()
+     * derives this module's route prefix from that very same path, so the
+     * relative route returned by route(..., [], false) already carries it --
+     * concatenating the full app.url here would double it up on a
+     * subdirectory install. Returns null when app.url has no usable
+     * scheme/host (e.g. unset, the pre-install default), so callers can fall
+     * back to the request-based absolute route instead of building a URL
+     * that is missing a host entirely.
+     */
+    public static function rootUrl($appUrl = null)
+    {
+        $appUrl = $appUrl !== null ? $appUrl : (string) config('app.url');
+
+        $scheme = parse_url($appUrl, PHP_URL_SCHEME);
+        $host   = parse_url($appUrl, PHP_URL_HOST);
+
+        if (!$scheme || !$host) {
+            return null;
+        }
+
+        $port = parse_url($appUrl, PHP_URL_PORT);
+
+        return $scheme.'://'.$host.($port ? ':'.$port : '');
     }
 
     /**
@@ -89,7 +130,7 @@ class WebhookRegistrar
         // would hold a secret we do not -- every delivery would then 403 until
         // someone registers again, which is precisely what re-running fixes.
         $this->account->webhook_id         = $id !== null ? (string) $id : null;
-        $this->account->webhook_url        = $url;
+        $this->account->webhook_url        = self::truncateUrl($url);
         $this->account->webhook_secret     = $secret;
         // webhook_active is tri-state: null means "not known". A response
         // that omits `active` (e.g. an empty body from a 204) tells us
@@ -128,7 +169,7 @@ class WebhookRegistrar
         $active = isset($webhook['active']) ? (bool) $webhook['active'] : null;
 
         $this->account->webhook_active     = $active;
-        $this->account->webhook_url        = isset($webhook['url']) ? $webhook['url'] : $this->account->webhook_url;
+        $this->account->webhook_url        = isset($webhook['url']) ? self::truncateUrl($webhook['url']) : $this->account->webhook_url;
         $this->account->webhook_checked_at = now();
         $this->account->webhook_error      = $active === false ? $this->pauseReason() : null;
         $this->account->save();
@@ -193,6 +234,18 @@ class WebhookRegistrar
         $this->account->webhook_checked_at = now();
         $this->account->webhook_error      = __('The webhook this module registered no longer exists in Kapso. Register it again.');
         $this->account->save();
+    }
+
+    /**
+     * Kapso's PATCH/GET responses echo the URL back and this is written
+     * verbatim so drift is visible -- but the column is string(255), and a
+     * value this module did not choose (an echo, a redirect-expanded host)
+     * could exceed that under strict SQL mode. Truncate rather than let
+     * save() throw.
+     */
+    protected static function truncateUrl($url)
+    {
+        return $url === null ? null : mb_substr((string) $url, 0, 255);
     }
 
     /**

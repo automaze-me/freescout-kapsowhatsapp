@@ -284,9 +284,18 @@ class WebhookRegistrationTest extends TestCase
         $this->assertCount(1, $this->history, 'a transient error fetching our own webhook must not fall through to listing/creating a duplicate');
     }
 
-    public function test_the_webhook_url_is_this_installs_own_endpoint()
+    /**
+     * The registration URL must follow config('app.url') -- the canonical
+     * install address -- not whatever host this particular request happened
+     * to arrive on. See Tests/Unit/WebhookUrlTest.php for the full coverage
+     * of that derivation, including the subdirectory case.
+     */
+    public function test_the_webhook_url_is_derived_from_the_configured_app_url()
     {
-        $this->assertSame(route('kapsowhatsapp.webhook'), WebhookRegistrar::webhookUrl());
+        $this->assertSame(
+            WebhookRegistrar::rootUrl().route('kapsowhatsapp.webhook', [], false),
+            WebhookRegistrar::webhookUrl()
+        );
     }
 
     /**
@@ -312,6 +321,31 @@ class WebhookRegistrationTest extends TestCase
         $account = $account->fresh();
         $this->assertSame('wh-mine', $account->webhook_id);
         $this->assertNull($account->webhook_active);
+    }
+
+    /**
+     * webhook_url is string(255) and Kapso's echoed value is written back
+     * verbatim -- a longer value (a redirect-expanded host, an unexpected
+     * echo) must be truncated rather than throw on save() under strict SQL
+     * mode.
+     */
+    public function test_refresh_truncates_an_oversized_echoed_url_instead_of_failing_to_save()
+    {
+        $longUrl = 'https://help.example.com/'.str_repeat('a', 300);
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => $longUrl, 'active' => true]])),
+        ]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+
+        $account = $account->fresh();
+        $this->assertSame(255, strlen($account->webhook_url));
+        $this->assertSame(mb_substr($longUrl, 0, 255), $account->webhook_url);
     }
 
     public function test_refresh_records_that_kapso_paused_the_webhook_and_why()
