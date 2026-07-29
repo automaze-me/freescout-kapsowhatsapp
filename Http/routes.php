@@ -28,4 +28,7 @@ Route::group([
     Route::get('/kapso-whatsapp/{id}/edit', 'KapsoWhatsAppController@edit')->name('kapsowhatsapp.edit')->where('id', '[0-9]+');
     Route::post('/kapso-whatsapp/{id}', 'KapsoWhatsAppController@update')->name('kapsowhatsapp.update')->where('id', '[0-9]+');
     Route::post('/kapso-whatsapp/{id}/delete', 'KapsoWhatsAppController@destroy')->name('kapsowhatsapp.destroy')->where('id', '[0-9]+');
+    Route::post('/kapso-whatsapp/{id}/webhook/register', 'KapsoWhatsAppController@registerWebhook')->name('kapsowhatsapp.webhook.register')->where('id', '[0-9]+');
+    Route::post('/kapso-whatsapp/{id}/webhook/refresh', 'KapsoWhatsAppController@refreshWebhook')->name('kapsowhatsapp.webhook.refresh')->where('id', '[0-9]+');
+    Route::post('/kapso-whatsapp/{id}/webhook/resume', 'KapsoWhatsAppController@resumeWebhook')->name('kapsowhatsapp.webhook.resume')->where('id', '[0-9]+');
 });

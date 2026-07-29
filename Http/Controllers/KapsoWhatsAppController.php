@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Mailbox;
 use Illuminate\Http\Request;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
+use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Services\WebhookRegistrar;
 
 class KapsoWhatsAppController extends Controller
 {
@@ -20,22 +22,60 @@ class KapsoWhatsAppController extends Controller
     {
         $this->authorizeAdmin();
 
+        $accounts = KapsoAccount::orderBy('name')->get();
+
+        foreach ($accounts as $account) {
+            $this->refreshStaleWebhookStatus($account);
+        }
+
         // This counts WhatsApp *delivery* failures (KapsoMessage rows with an
         // error, e.g. a message rejected for being outside the 24h customer
         // service window) -- not Kapso's own webhook delivery failure rate,
-        // which is a separate, unrelated metric this page has no visibility
-        // into. A rising count here means messages are failing to reach
-        // customers, not that the webhook is at risk of Kapso's auto-pause.
+        // which is what the Webhook column shows.
         $failures = \Modules\KapsoWhatsApp\Entities\KapsoMessage::whereNotNull('error')
             ->where('created_at', '>=', now()->subDay())
             ->groupBy('account_id')
             ->selectRaw('account_id, count(*) as total')
             ->pluck('total', 'account_id');
 
+        $webhookUrl = WebhookRegistrar::webhookUrl();
+
         return view('kapsowhatsapp::settings', [
-            'accounts' => KapsoAccount::orderBy('name')->get(),
-            'failures' => $failures,
+            'accounts'              => $accounts,
+            'failures'              => $failures,
+            'webhookUrl'            => $webhookUrl,
+            'webhookUrlUnreachable' => WebhookRegistrar::looksUnreachable($webhookUrl),
         ]);
+    }
+
+    /**
+     * Kapso pauses a webhook after a run of failures and never resumes it, so
+     * the pause has to become visible without anyone clicking anything. Only
+     * registered accounts are checked, and only when the last reading has gone
+     * stale, so this is at most one round trip per account per few minutes --
+     * and a Kapso outage degrades to an error on the row, never to an
+     * unusable settings page.
+     */
+    protected function refreshStaleWebhookStatus(KapsoAccount $account)
+    {
+        if (!$account->isWebhookRegistered()) {
+            return;
+        }
+
+        if ($account->webhook_checked_at
+            && $account->webhook_checked_at->gt(now()->subMinutes(WebhookRegistrar::STALE_AFTER_MINUTES))) {
+            return;
+        }
+
+        try {
+            (new WebhookRegistrar($account))->refresh();
+        } catch (KapsoApiException $e) {
+            $account->webhook_error      = $e->getMessage();
+            $account->webhook_checked_at = now();
+            $account->save();
+        } catch (\Exception $e) {
+            \Log::error('[KapsoWhatsApp] Webhook status refresh failed: '.$e->getMessage());
+        }
     }
 
     public function create()
@@ -56,7 +96,6 @@ class KapsoWhatsAppController extends Controller
             'name'            => 'required|string|max:191',
             'phone_number_id' => 'required|string|max:64|unique:kapso_whatsapp_accounts,phone_number_id',
             'api_key'         => 'required|string',
-            'webhook_secret'  => 'required|string',
             'mailbox_id'      => 'required|integer|exists:mailboxes,id',
         ]);
 
@@ -110,9 +149,64 @@ class KapsoWhatsAppController extends Controller
         return redirect()->route('kapsowhatsapp.settings');
     }
 
+    public function registerWebhook($id)
+    {
+        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
+            $registrar->register();
+
+            return __('Webhook registered with Kapso.');
+        });
+    }
+
+    public function refreshWebhook($id)
+    {
+        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
+            $registrar->refresh();
+
+            return __('Webhook status updated.');
+        });
+    }
+
+    public function resumeWebhook($id)
+    {
+        return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
+            $registrar->resume();
+
+            return __('Webhook re-enabled.');
+        });
+    }
+
     /**
-     * Blank secret fields on edit mean "leave unchanged" — the form never
-     * renders existing secrets back to the browser.
+     * One place decides what the admin sees when Kapso says no. Every message
+     * names what to change -- an invalid key demands a valid key -- and none
+     * of them offers a manual registration path: a documented curl fallback
+     * rots the moment Kapso changes its API and invites half-configured
+     * installs where nobody knows which system registered what.
+     */
+    protected function runWebhookAction($id, \Closure $action)
+    {
+        $this->authorizeAdmin();
+
+        $account = KapsoAccount::findOrFail($id);
+
+        try {
+            \Session::flash('flash_success_floating', $action(new WebhookRegistrar($account)));
+        } catch (KapsoApiException $e) {
+            $account->webhook_error      = $e->getMessage();
+            $account->webhook_checked_at = now();
+            $account->save();
+
+            \Session::flash('flash_error_floating', $e->getMessage());
+        }
+
+        return redirect()->route('kapsowhatsapp.settings');
+    }
+
+    /**
+     * A blank api_key on edit means "leave unchanged" — the form never renders
+     * the existing key back to the browser. The webhook secret is not a form
+     * field at all: it is generated by WebhookRegistrar when the webhook is
+     * registered, so FreeScout and Kapso can never hold different values.
      */
     protected function applyRequest(KapsoAccount $account, Request $request)
     {
@@ -124,10 +218,6 @@ class KapsoWhatsAppController extends Controller
 
         if ($request->filled('api_key')) {
             $account->api_key = $request->input('api_key');
-        }
-
-        if ($request->filled('webhook_secret')) {
-            $account->webhook_secret = $request->input('webhook_secret');
         }
     }
 }
