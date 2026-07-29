@@ -446,14 +446,28 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertStringContainsString('Register again', $html);
     }
 
+    /**
+     * Task 3 replaced the account form's free-text id fields with a dropdown
+     * of Kapso's own numbers (NumberPickerTest), which is why this needs a
+     * fake numbers response to reach kapsowhatsapp.create at all now. The
+     * form's old "Webhook Secret" field group -- and the explanatory text
+     * that went with it -- no longer exists in any form: there is no longer
+     * a secret-shaped gap on this form to explain, since nothing on it reads
+     * like a place a secret could ever have gone.
+     */
     public function test_the_account_form_no_longer_asks_for_a_webhook_secret()
     {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                ['phone_number_id' => '1', 'business_account_id' => '2'],
+            ]])),
+        ]);
+
         $html = $this->actingAs($this->adminUser())
             ->get(route('kapsowhatsapp.create'))
             ->assertStatus(200)
             ->getContent();
 
         $this->assertStringNotContainsString('name="webhook_secret"', $html);
-        $this->assertStringContainsString('generated', strtolower($html));
     }
 }

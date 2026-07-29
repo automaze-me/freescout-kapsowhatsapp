@@ -11,6 +11,22 @@ namespace Modules\KapsoWhatsApp\Services;
  */
 class KapsoNumber
 {
+    /**
+     * Just the human name Kapso/Meta has for this number -- Meta's own
+     * verified_name, falling back to the editable name Kapso stores -- with
+     * no phone number and no quality rating mixed in. label() needs both of
+     * those to tell rows apart in a dropdown; a fallback for the account's
+     * own free-text Name field does not, since it is naming one already-
+     * chosen account rather than distinguishing it from others. '' when
+     * neither field is set.
+     */
+    public static function humanName(array $record)
+    {
+        $name = self::text($record, 'verified_name');
+
+        return $name !== '' ? $name : self::text($record, 'name');
+    }
+
     public static function label(array $record)
     {
         $number = self::text($record, 'display_phone_number');
@@ -23,11 +39,7 @@ class KapsoNumber
             $number = self::text($record, 'phone_number_id');
         }
 
-        $name = self::text($record, 'verified_name');
-
-        if ($name === '') {
-            $name = self::text($record, 'name');
-        }
+        $name = self::humanName($record);
 
         // An explicit '' check -- not array_filter()'s default callback,
         // which treats the string '0' as falsy and would silently drop a

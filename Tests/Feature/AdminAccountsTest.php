@@ -3,12 +3,20 @@
 namespace Modules\KapsoWhatsApp\Tests\Feature;
 
 use App\User;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
+use Modules\KapsoWhatsApp\Services\KapsoClient;
 use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class AdminAccountsTest extends TestCase
 {
+    protected $history = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -25,6 +33,26 @@ class AdminAccountsTest extends TestCase
     protected function nonAdmin(): User
     {
         return $this->regularUser();
+    }
+
+    protected function fakeResponses(array $queue): void
+    {
+        $this->history = [];
+        $stack         = HandlerStack::create(new MockHandler($queue));
+        $stack->push(Middleware::history($this->history));
+
+        KapsoClient::fakeHttp(new Client(['handler' => $stack]));
+    }
+
+    /**
+     * store()/update() now resolve phone_number_id and business_account_id
+     * from Kapso's own list (Task 3) rather than accepting either as free
+     * text, so any test that reaches applyRequest() needs a fake list
+     * containing the id it posts.
+     */
+    protected function numbersResponse(array $records): Response
+    {
+        return new Response(200, [], json_encode(['data' => $records]));
     }
 
     /**
@@ -71,11 +99,13 @@ class AdminAccountsTest extends TestCase
     public function test_admin_can_create_an_account()
     {
         $mailbox = $this->testMailbox();
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '123456789012345', 'business_account_id' => 'waba-1'],
+        ])]);
 
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
             'phone_number_id' => '123456789012345',
-            'webhook_secret'  => 'hmac-abc',
             'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
         ]);
@@ -89,15 +119,20 @@ class AdminAccountsTest extends TestCase
 
     public function test_phone_number_id_must_be_unique()
     {
-        $admin = $this->admin();
+        $admin   = $this->admin();
         $mailbox = $this->testMailbox();
         $payload = [
             'name'            => 'Support',
             'phone_number_id' => '555000111',
-            'webhook_secret'  => 'hmac',
             'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
         ];
+
+        // Only the first POST reaches Kapso: the second is rejected by the
+        // uniqueness rule before applyRequest() ever calls availableNumbers().
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '555000111', 'business_account_id' => 'waba-1'],
+        ])]);
 
         $this->actingAs($admin)->post(route('kapsowhatsapp.store'), $payload);
         $this->actingAs($admin)->post(route('kapsowhatsapp.store'), $payload)
@@ -188,6 +223,9 @@ class AdminAccountsTest extends TestCase
     public function test_a_webhook_secret_posted_to_the_form_is_ignored()
     {
         $account = $this->makeAccount(['webhook_secret' => 'original-webhook-secret']);
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => $account->phone_number_id, 'business_account_id' => 'waba-1'],
+        ])]);
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => $account->name,
@@ -201,14 +239,17 @@ class AdminAccountsTest extends TestCase
     }
 
     /**
-     * The API key is no longer an admin-supplied per-account value either
-     * (Task 1): Kapso scopes it to the whole project, so an api_key field
-     * posted to this form must be silently ignored, the same rule already
-     * enforced above for webhook_secret.
+     * The API key is a module-wide setting (Task 1), not a per-account value,
+     * and the account form has had no api_key field at all since then -- so
+     * an api_key posted alongside an otherwise-ordinary update must not touch
+     * it either, the same rule already enforced above for webhook_secret.
      */
     public function test_an_api_key_posted_to_the_form_is_ignored()
     {
         $account = $this->makeAccount();
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => $account->phone_number_id, 'business_account_id' => 'waba-1'],
+        ])]);
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => $account->name,
@@ -224,6 +265,9 @@ class AdminAccountsTest extends TestCase
     public function test_an_account_can_be_created_without_a_webhook_secret()
     {
         $mailbox = $this->testMailbox();
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '123456789012399', 'business_account_id' => 'waba-1'],
+        ])]);
 
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
@@ -254,6 +298,9 @@ class AdminAccountsTest extends TestCase
     public function test_update_allows_keeping_its_own_phone_number_id()
     {
         $account = $this->makeAccount(['phone_number_id' => '700000000000001']);
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '700000000000001', 'business_account_id' => 'waba-1'],
+        ])]);
 
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
             'name'            => 'Renamed Again',
@@ -271,6 +318,8 @@ class AdminAccountsTest extends TestCase
         $accountA = $this->makeAccount(['phone_number_id' => '700000000000002']);
         $accountB = $this->makeAccount(['phone_number_id' => '700000000000003']);
 
+        // The uniqueness rule rejects this before applyRequest() ever calls
+        // availableNumbers(), so no Kapso call is expected here.
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $accountA->id]), [
             'name'            => $accountA->name,
             'phone_number_id' => $accountB->phone_number_id,

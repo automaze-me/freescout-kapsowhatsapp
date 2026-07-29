@@ -7,6 +7,9 @@ use App\Mailbox;
 use Illuminate\Http\Request;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Services\KapsoClient;
+use Modules\KapsoWhatsApp\Services\KapsoNumber;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Services\WebhookRegistrar;
 
 class KapsoWhatsAppController extends Controller
@@ -87,13 +90,60 @@ class KapsoWhatsAppController extends Controller
         }
     }
 
+    /**
+     * The numbers the admin may choose from, plus whatever went wrong instead.
+     *
+     * Returns [records, error]: exactly one of them is meaningful. Rendering
+     * this on a GET means a Kapso outage must degrade to a message on the
+     * form, never to a 500 on the page an admin opens to fix things.
+     */
+    protected function availableNumbers()
+    {
+        if (!Settings::hasApiKey()) {
+            return [[], __('No Kapso API key is configured yet. Add one on the WhatsApp Accounts page, then come back.')];
+        }
+
+        try {
+            $numbers = (new KapsoClient(new KapsoAccount()))->listPhoneNumbers();
+        } catch (KapsoApiException $e) {
+            return [[], $e->getMessage()];
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] Could not list phone numbers: '.$e->getMessage());
+
+            return [[], __('Could not load the WhatsApp numbers from Kapso.')];
+        }
+
+        if (!$numbers) {
+            return [[], __('This Kapso project has no WhatsApp numbers yet. Add one in Kapso, then come back.')];
+        }
+
+        return [$numbers, null];
+    }
+
+    /**
+     * phone_number_id is unique per account, so a number already bound to
+     * another account is not a valid choice -- except on that account's own
+     * edit form.
+     */
+    protected function takenPhoneNumberIds($exceptAccountId = null)
+    {
+        return KapsoAccount::when($exceptAccountId, function ($query) use ($exceptAccountId) {
+            return $query->where('id', '<>', $exceptAccountId);
+        })->pluck('phone_number_id')->all();
+    }
+
     public function create()
     {
         $this->authorizeAdmin();
 
+        list($numbers, $numbersError) = $this->availableNumbers();
+
         return view('kapsowhatsapp::account_form', [
-            'account'   => new KapsoAccount(),
-            'mailboxes' => Mailbox::orderBy('name')->get(),
+            'account'             => new KapsoAccount(),
+            'mailboxes'           => Mailbox::orderBy('name')->get(),
+            'numbers'             => $numbers,
+            'numbersError'        => $numbersError,
+            'takenPhoneNumberIds' => $this->takenPhoneNumberIds(),
         ]);
     }
 
@@ -102,13 +152,18 @@ class KapsoWhatsAppController extends Controller
         $this->authorizeAdmin();
 
         $this->validate($request, [
-            'name'            => 'required|string|max:191',
+            'name'            => 'nullable|string|max:191',
             'phone_number_id' => 'required|string|max:64|unique:kapso_whatsapp_accounts,phone_number_id',
             'mailbox_id'      => 'required|integer|exists:mailboxes,id',
         ]);
 
         $account = new KapsoAccount();
-        $this->applyRequest($account, $request);
+
+        if (!$this->applyRequest($account, $request)) {
+            return redirect()->back()->withInput()
+                ->withErrors(['phone_number_id' => __('That number is not one of the WhatsApp numbers in your Kapso project. Reload the page and pick again.')]);
+        }
+
         $account->save();
 
         \Session::flash('flash_success_floating', __('Account saved'));
@@ -120,9 +175,16 @@ class KapsoWhatsAppController extends Controller
     {
         $this->authorizeAdmin();
 
+        $account = KapsoAccount::findOrFail($id);
+
+        list($numbers, $numbersError) = $this->availableNumbers();
+
         return view('kapsowhatsapp::account_form', [
-            'account'   => KapsoAccount::findOrFail($id),
-            'mailboxes' => Mailbox::orderBy('name')->get(),
+            'account'             => $account,
+            'mailboxes'           => Mailbox::orderBy('name')->get(),
+            'numbers'             => $numbers,
+            'numbersError'        => $numbersError,
+            'takenPhoneNumberIds' => $this->takenPhoneNumberIds($account->id),
         ]);
     }
 
@@ -133,12 +195,16 @@ class KapsoWhatsAppController extends Controller
         $account = KapsoAccount::findOrFail($id);
 
         $this->validate($request, [
-            'name'            => 'required|string|max:191',
+            'name'            => 'nullable|string|max:191',
             'phone_number_id' => 'required|string|max:64|unique:kapso_whatsapp_accounts,phone_number_id,'.$account->id,
             'mailbox_id'      => 'required|integer|exists:mailboxes,id',
         ]);
 
-        $this->applyRequest($account, $request);
+        if (!$this->applyRequest($account, $request)) {
+            return redirect()->back()->withInput()
+                ->withErrors(['phone_number_id' => __('That number is not one of the WhatsApp numbers in your Kapso project. Reload the page and pick again.')]);
+        }
+
         $account->save();
 
         \Session::flash('flash_success_floating', __('Account saved'));
@@ -263,19 +329,48 @@ class KapsoWhatsAppController extends Controller
     }
 
     /**
-     * The Kapso API key is not a per-account field at all: it is a
-     * module-wide setting (Settings::setApiKey()), since Kapso scopes a key
-     * to a project and phone numbers belong to that project. The webhook
-     * secret is likewise not a form field: it is generated by
-     * WebhookRegistrar when the webhook is registered, so FreeScout and
-     * Kapso can never hold different values.
+     * The two Meta identifiers are looked up in Kapso's own list rather than
+     * read from the request, so a tampered form cannot bind an account to an
+     * arbitrary phone number or business account. Returns false when the
+     * submitted number is not in the project.
+     *
+     * The webhook secret is not a form field at all: WebhookRegistrar mints it
+     * at registration time so FreeScout and Kapso cannot hold different values.
      */
     protected function applyRequest(KapsoAccount $account, Request $request)
     {
-        $account->name                = $request->input('name');
-        $account->phone_number_id     = $request->input('phone_number_id');
-        $account->business_account_id = $request->input('business_account_id');
+        list($numbers) = $this->availableNumbers();
+
+        $record = KapsoNumber::find($numbers, $request->input('phone_number_id'));
+
+        if (!$record) {
+            return false;
+        }
+
+        $name = trim((string) $request->input('name'));
+
+        if ($name === '') {
+            // The number's own human name (e.g. "Acme GmbH"), not the fuller
+            // "+49 151 1 — Acme GmbH" label() builds for the dropdown: this
+            // is naming one already-chosen account, not disambiguating it
+            // from a list. Only falls back to the full label when Kapso has
+            // given neither verified_name nor name, so the account can never
+            // end up with a blank one.
+            $name = KapsoNumber::humanName($record);
+
+            if ($name === '') {
+                $name = KapsoNumber::label($record);
+            }
+        }
+
+        $account->name                = $name;
+        $account->phone_number_id     = (string) $record['phone_number_id'];
+        $account->business_account_id = isset($record['business_account_id']) && is_scalar($record['business_account_id'])
+            ? (string) $record['business_account_id']
+            : null;
         $account->mailbox_id          = (int) $request->input('mailbox_id');
         $account->is_active           = (bool) $request->input('is_active');
+
+        return true;
     }
 }
