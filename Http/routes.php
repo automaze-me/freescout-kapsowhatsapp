@@ -21,6 +21,7 @@ Route::group([
     'namespace'  => 'Modules\KapsoWhatsApp\Http\Controllers',
 ], function () {
     Route::get('/kapso-whatsapp', 'KapsoWhatsAppController@settings')->name('kapsowhatsapp.settings');
+    Route::post('/kapso-whatsapp/api-key', 'KapsoWhatsAppController@saveApiKey')->name('kapsowhatsapp.apikey');
     Route::get('/kapso-whatsapp/create', 'KapsoWhatsAppController@create')->name('kapsowhatsapp.create');
     Route::post('/kapso-whatsapp', 'KapsoWhatsAppController@store')->name('kapsowhatsapp.store');
     // Constrained to digits so a wildcard {id} can never match

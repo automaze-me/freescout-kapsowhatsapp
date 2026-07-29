@@ -48,7 +48,27 @@ class KapsoWhatsAppController extends Controller
             'failures'              => $failures,
             'webhookUrl'            => $webhookUrl,
             'webhookUrlUnreachable' => WebhookRegistrar::looksUnreachable($webhookUrl),
+            'hasApiKey'             => Settings::hasApiKey(),
         ]);
+    }
+
+    /**
+     * Blank means "leave unchanged" -- the stored key is never rendered back
+     * to the browser, so a blank submit is what an admin who only wanted to
+     * look at the page produces.
+     */
+    public function saveApiKey(Request $request)
+    {
+        $this->authorizeAdmin();
+
+        $this->validate($request, ['api_key' => 'nullable|string|max:512']);
+
+        if ($request->filled('api_key')) {
+            Settings::setApiKey(trim($request->input('api_key')));
+            \Session::flash('flash_success_floating', __('Kapso API key saved.'));
+        }
+
+        return redirect()->route('kapsowhatsapp.settings');
     }
 
     /**

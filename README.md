@@ -17,15 +17,14 @@ yet sent from FreeScout.
 
 1. Extract into `Modules/KapsoWhatsApp/`.
 2. Activate the module in **Manage → Modules**.
-3. Go to **Manage → WhatsApp Accounts** and add an account: name, Phone Number ID, and the mailbox
-   that WhatsApp conversations should land in. The Kapso API key is configured once for the whole
-   install, not per account, since Kapso scopes a key to a project and phone numbers belong to
-   that project.
-4. Click **Register with Kapso** on that account's row. The module generates the webhook secret,
-   registers the webhook against your phone number, and subscribes to exactly the events it needs.
-   You never copy a secret or a URL by hand, and FreeScout and Kapso cannot end up holding
-   different secrets.
-5. Send yourself a WhatsApp message and check the mailbox.
+3. Go to **Manage → WhatsApp Accounts** and paste your Kapso API key. One key covers the whole
+   install: your WhatsApp numbers come from the Kapso project it belongs to.
+4. Click **Add Number**, pick a number from the dropdown and choose the mailbox its conversations
+   should land in. You never copy a Phone Number ID or a Business Account ID — the module reads
+   both from Kapso.
+5. Click **Register with Kapso** on the new row. The module generates the webhook secret, registers
+   the webhook against that number, and subscribes to exactly the events it needs.
+6. Send yourself a WhatsApp message and check the mailbox.
 
 FreeScout must be reachable from the public internet for Kapso to deliver anything. If it is not,
 the accounts page says so.

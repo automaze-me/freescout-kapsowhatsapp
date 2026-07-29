@@ -282,4 +282,66 @@ class NumberPickerTest extends TestCase
         $this->assertStringNotContainsString('is not one of the WhatsApp numbers', $message);
         $this->assertSame('Existing', $account->fresh()->name);
     }
+
+    public function test_an_admin_can_save_the_api_key()
+    {
+        $this->fakeResponses([]);
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => 'key-from-form'])
+            ->assertStatus(302)
+            ->assertSessionHas('flash_success_floating');
+
+        $this->assertSame('key-from-form', Settings::apiKey());
+    }
+
+    public function test_a_blank_api_key_leaves_the_stored_one_alone()
+    {
+        Settings::setApiKey('existing-key');
+        $this->fakeResponses([]);
+
+        $this->actingAs($this->adminUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => ''])
+            ->assertStatus(302);
+
+        $this->assertSame('existing-key', Settings::apiKey());
+    }
+
+    public function test_a_non_admin_cannot_save_the_api_key()
+    {
+        Settings::setApiKey('existing-key');
+        $this->fakeResponses([]);
+
+        $this->actingAs($this->regularUser())
+            ->post(route('kapsowhatsapp.apikey'), ['api_key' => 'attacker-key'])
+            ->assertStatus(403);
+
+        $this->assertSame('existing-key', Settings::apiKey());
+    }
+
+    public function test_the_settings_page_never_renders_the_stored_key()
+    {
+        Settings::setApiKey('super-secret-key');
+        $this->fakeResponses([]);
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringNotContainsString('super-secret-key', $html);
+    }
+
+    public function test_the_settings_page_prompts_for_a_key_when_none_is_set()
+    {
+        $this->fakeResponses([]);
+
+        $html = $this->actingAs($this->adminUser())
+            ->get(route('kapsowhatsapp.settings'))
+            ->assertStatus(200)
+            ->getContent();
+
+        $this->assertStringContainsString('API key', $html);
+        $this->assertStringNotContainsString('curl', strtolower($html));
+    }
 }
