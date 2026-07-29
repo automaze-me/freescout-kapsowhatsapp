@@ -119,6 +119,11 @@ class WebhookAdminActionsTest extends TestCase
      * Before this fix, resume() had no 404 branch, so a webhook Kapso had
      * deleted made the button tell the admin to check the Phone Number ID
      * and API key -- both correct -- instead of naming the actual problem.
+     *
+     * This must flash as an error, not a success: "the webhook this module
+     * registered no longer exists" is bad news on the one button an admin
+     * presses to recover a paused webhook, and a green tick would tell them
+     * the opposite of what just happened.
      */
     public function test_resuming_a_webhook_that_kapso_deleted_names_it_as_gone()
     {
@@ -133,9 +138,9 @@ class WebhookAdminActionsTest extends TestCase
         $this->actingAs($this->adminUser())
             ->post(route('kapsowhatsapp.webhook.resume', ['id' => $account->id]))
             ->assertStatus(302)
-            ->assertSessionHas('flash_success_floating');
+            ->assertSessionHas('flash_error_floating');
 
-        $message = session('flash_success_floating');
+        $message = session('flash_error_floating');
         $this->assertStringContainsString('no longer exists', $message);
         $this->assertStringNotContainsString('Phone Number ID', $message);
 

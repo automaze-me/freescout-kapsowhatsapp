@@ -163,7 +163,7 @@ class KapsoWhatsAppController extends Controller
         return $this->runWebhookAction($id, function (WebhookRegistrar $registrar) {
             $registrar->register();
 
-            return __('Webhook registered with Kapso.');
+            return [true, __('Webhook registered with Kapso.')];
         });
     }
 
@@ -174,17 +174,17 @@ class KapsoWhatsAppController extends Controller
             $webhook       = $registrar->refresh();
 
             if ($webhook !== null) {
-                return __('Webhook status updated.');
+                return [true, __('Webhook status updated.')];
             }
 
             // refresh() returns null both when nothing was ever registered
-            // (nothing to say beyond that) and when it just discovered the
-            // webhook is gone from Kapso's side -- in which case it already
-            // wrote the specific reason to webhook_error, which is a better
-            // answer than a generic "updated".
+            // (nothing to say beyond that -- not bad news, just a no-op) and
+            // when it just discovered the webhook is gone from Kapso's side,
+            // which already wrote the specific reason to webhook_error and
+            // is genuinely bad news: WhatsApp messages have stopped arriving.
             return $wasRegistered
-                ? $account->webhook_error
-                : __('Nothing is registered for this account.');
+                ? [false, $account->webhook_error]
+                : [true, __('Nothing is registered for this account.')];
         });
     }
 
@@ -195,10 +195,13 @@ class KapsoWhatsAppController extends Controller
 
             // resume() only returns null after discovering the webhook is
             // gone from Kapso's side (see WebhookRegistrar::markWebhookGone),
-            // which already wrote the reason to webhook_error.
+            // which already wrote the reason to webhook_error. That is the
+            // one button admins press to recover a paused webhook, so
+            // "actually there's nothing left to resume" must read as bad
+            // news, not a green checkmark.
             return $webhook !== null
-                ? __('Webhook re-enabled.')
-                : $account->webhook_error;
+                ? [true, __('Webhook re-enabled.')]
+                : [false, $account->webhook_error];
         });
     }
 
@@ -208,6 +211,13 @@ class KapsoWhatsAppController extends Controller
      * of them offers a manual registration path: a documented curl fallback
      * rots the moment Kapso changes its API and invites half-configured
      * installs where nobody knows which system registered what.
+     *
+     * $action returns [bool $success, string $message]: reaching Kapso
+     * without an exception is not the same as good news for the admin (e.g.
+     * discovering the webhook it held is gone), so success/failure is decided
+     * by the closure explicitly rather than inferred from "did it throw".
+     * A thrown KapsoApiException -- the request itself failing -- is always
+     * an error flash, handled the same way regardless of which action ran.
      */
     protected function runWebhookAction($id, \Closure $action)
     {
@@ -216,7 +226,9 @@ class KapsoWhatsAppController extends Controller
         $account = KapsoAccount::findOrFail($id);
 
         try {
-            \Session::flash('flash_success_floating', $action(new WebhookRegistrar($account), $account));
+            [$success, $message] = $action(new WebhookRegistrar($account), $account);
+
+            \Session::flash($success ? 'flash_success_floating' : 'flash_error_floating', $message);
         } catch (KapsoApiException $e) {
             $this->recordWebhookError($account, $e);
 
