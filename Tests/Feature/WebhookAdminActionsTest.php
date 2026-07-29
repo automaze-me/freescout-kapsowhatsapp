@@ -9,12 +9,21 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Services\WebhookRegistrar;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class WebhookAdminActionsTest extends TestCase
 {
     protected $history = [];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('key-abc');
+    }
 
     protected function makeAccount(array $overrides = []): KapsoAccount
     {
@@ -25,7 +34,6 @@ class WebhookAdminActionsTest extends TestCase
             'mailbox_id'      => $this->testMailbox()->id,
             'is_active'       => true,
         ], $overrides));
-        $account->api_key = 'key-abc';
         $account->save();
 
         return $account;
@@ -86,9 +94,8 @@ class WebhookAdminActionsTest extends TestCase
     {
         $this->fakeResponses([]);
 
-        $account          = $this->makeAccount();
-        $account->api_key = null;
-        $account->save();
+        $account = $this->makeAccount();
+        Settings::setApiKey(null);
 
         $this->actingAs($this->adminUser())
             ->post(route('kapsowhatsapp.webhook.register', ['id' => $account->id]))

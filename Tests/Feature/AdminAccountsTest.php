@@ -4,10 +4,19 @@ namespace Modules\KapsoWhatsApp\Tests\Feature;
 
 use App\User;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class AdminAccountsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('secret-key');
+    }
+
     protected function admin(): User
     {
         return $this->adminUser();
@@ -19,8 +28,8 @@ class AdminAccountsTest extends TestCase
     }
 
     /**
-     * api_key/webhook_secret are intentionally not $fillable (Task 2), so
-     * fixtures set them via direct property assignment, same as DataModelTest.
+     * webhook_secret is intentionally not $fillable, so fixtures set it via
+     * direct property assignment, same as DataModelTest.
      */
     protected function makeAccount(array $overrides = []): KapsoAccount
     {
@@ -34,7 +43,6 @@ class AdminAccountsTest extends TestCase
             'mailbox_id'          => $mailboxId,
             'is_active'           => true,
         ], $overrides));
-        $account->api_key        = $overrides['api_key'] ?? 'secret-key';
         $account->webhook_secret = $overrides['webhook_secret'] ?? 'secret-hmac';
         $account->save();
 
@@ -67,7 +75,6 @@ class AdminAccountsTest extends TestCase
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
             'phone_number_id' => '123456789012345',
-            'api_key'         => 'key-abc',
             'webhook_secret'  => 'hmac-abc',
             'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
@@ -77,7 +84,6 @@ class AdminAccountsTest extends TestCase
 
         $account = KapsoAccount::where('phone_number_id', '123456789012345')->first();
         $this->assertNotNull($account);
-        $this->assertSame('key-abc', $account->api_key);
         $this->assertSame($mailbox->id, (int) $account->mailbox_id);
     }
 
@@ -88,7 +94,6 @@ class AdminAccountsTest extends TestCase
         $payload = [
             'name'            => 'Support',
             'phone_number_id' => '555000111',
-            'api_key'         => 'key',
             'webhook_secret'  => 'hmac',
             'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
@@ -175,47 +180,6 @@ class AdminAccountsTest extends TestCase
 
     // --- Blank vs. non-blank secrets on update ---
 
-    public function test_update_with_blank_api_key_leaves_it_unchanged()
-    {
-        $account = $this->makeAccount([
-            'api_key' => 'original-api-key',
-        ]);
-
-        $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
-            'name'            => 'Renamed Support',
-            'phone_number_id' => $account->phone_number_id,
-            'mailbox_id'      => $account->mailbox_id,
-            'api_key'         => '',
-            'is_active'       => 1,
-        ]);
-
-        $response->assertRedirect(route('kapsowhatsapp.settings'));
-
-        $fresh = $account->fresh();
-        $this->assertSame('Renamed Support', $fresh->name, 'the non-secret field should still have been updated');
-        $this->assertSame('original-api-key', $fresh->api_key);
-    }
-
-    public function test_update_with_non_blank_api_key_replaces_it()
-    {
-        $account = $this->makeAccount([
-            'api_key' => 'original-api-key',
-        ]);
-
-        $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
-            'name'            => $account->name,
-            'phone_number_id' => $account->phone_number_id,
-            'mailbox_id'      => $account->mailbox_id,
-            'api_key'         => 'new-api-key',
-            'is_active'       => 1,
-        ]);
-
-        $response->assertRedirect(route('kapsowhatsapp.settings'));
-
-        $fresh = $account->fresh();
-        $this->assertSame('new-api-key', $fresh->api_key);
-    }
-
     /**
      * The webhook secret is no longer an admin-supplied value: it is minted by
      * WebhookRegistrar at registration time so FreeScout and Kapso can never
@@ -236,6 +200,27 @@ class AdminAccountsTest extends TestCase
         $this->assertSame('original-webhook-secret', $account->fresh()->webhook_secret);
     }
 
+    /**
+     * The API key is no longer an admin-supplied per-account value either
+     * (Task 1): Kapso scopes it to the whole project, so an api_key field
+     * posted to this form must be silently ignored, the same rule already
+     * enforced above for webhook_secret.
+     */
+    public function test_an_api_key_posted_to_the_form_is_ignored()
+    {
+        $account = $this->makeAccount();
+
+        $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
+            'name'            => $account->name,
+            'phone_number_id' => $account->phone_number_id,
+            'mailbox_id'      => $account->mailbox_id,
+            'api_key'         => 'attacker-supplied',
+            'is_active'       => 1,
+        ])->assertStatus(302);
+
+        $this->assertSame('secret-key', Settings::apiKey(), 'posting api_key on the per-account form must not touch the module-wide key');
+    }
+
     public function test_an_account_can_be_created_without_a_webhook_secret()
     {
         $mailbox = $this->testMailbox();
@@ -243,7 +228,6 @@ class AdminAccountsTest extends TestCase
         $this->actingAs($this->admin())->post(route('kapsowhatsapp.store'), [
             'name'            => 'Support',
             'phone_number_id' => '123456789012399',
-            'api_key'         => 'key-abc',
             'mailbox_id'      => $mailbox->id,
             'is_active'       => 1,
         ])->assertStatus(302)->assertSessionMissing('errors');

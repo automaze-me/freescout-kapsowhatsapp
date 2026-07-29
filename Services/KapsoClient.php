@@ -80,7 +80,7 @@ class KapsoClient
 
         try {
             $response = $this->client->request('GET', $url, [
-                'headers' => ['X-API-Key' => $this->account->api_key],
+                'headers' => ['X-API-Key' => Settings::apiKey()],
             ]);
 
             if ($response->getStatusCode() !== 200) {
@@ -169,11 +169,11 @@ class KapsoClient
      */
     protected function platformRequest($method, $path, array $body = null, array $query = [])
     {
-        $apiKey = $this->account->api_key;
+        $apiKey = Settings::apiKey();
 
         if (!$apiKey) {
             throw new KapsoApiException(
-                __('This account has no Kapso API key. Enter a valid Kapso API key for this account and save, then try again.')
+                __('No Kapso API key is configured. Add one in Manage » WhatsApp Accounts and try again.')
             );
         }
 

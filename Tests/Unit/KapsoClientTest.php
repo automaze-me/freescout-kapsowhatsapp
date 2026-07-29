@@ -11,6 +11,7 @@ use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 /**
@@ -22,17 +23,21 @@ use Modules\KapsoWhatsApp\Tests\TestCase;
  */
 class KapsoClientTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('project-secret-key');
+    }
+
     /**
-     * No ->save() (no DB round trip needed): the setApiKeyAttribute()/
-     * getApiKeyAttribute() mutator/accessor pair encrypts and decrypts in
-     * memory off the app key alone.
+     * No ->save() (no DB round trip needed): downloadMedia() reads the key
+     * from Settings, not from the account.
      */
     protected function account(): KapsoAccount
     {
-        $account = new KapsoAccount();
-        $account->api_key = 'project-secret-key';
-
-        return $account;
+        return new KapsoAccount();
     }
 
     protected function clientWithHistory(array $queue, array &$history): Client
@@ -43,7 +48,7 @@ class KapsoClientTest extends TestCase
         return new Client(['handler' => $stack]);
     }
 
-    public function test_it_downloads_media_with_the_account_api_key_in_the_header()
+    public function test_it_downloads_media_with_the_configured_api_key_in_the_header()
     {
         $history = [];
         $client  = $this->clientWithHistory([new Response(200, [], 'raw-media-bytes')], $history);

@@ -131,16 +131,6 @@ class KapsoAccount extends Model
         return $normalized;
     }
 
-    public function setApiKeyAttribute($value)
-    {
-        $this->attributes['api_key'] = $value === null ? null : encrypt($value);
-    }
-
-    public function getApiKeyAttribute($value)
-    {
-        return $this->decryptOrNull($value);
-    }
-
     public function setWebhookSecretAttribute($value)
     {
         $this->attributes['webhook_secret'] = $value === null ? null : encrypt($value);

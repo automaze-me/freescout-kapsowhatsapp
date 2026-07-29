@@ -4,11 +4,20 @@ namespace Modules\KapsoWhatsApp\Tests\Feature;
 
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class WebhookSecurityTest extends TestCase
 {
     protected $secret = 'test-webhook-secret';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('key');
+    }
 
     protected function makeAccount(array $overrides = []): KapsoAccount
     {
@@ -19,7 +28,6 @@ class WebhookSecurityTest extends TestCase
             'mailbox_id'      => $this->testMailbox()->id,
             'is_active'       => true,
         ], $overrides));
-        $account->api_key        = 'key';
         $account->webhook_secret = $this->secret;
         $account->save();
 

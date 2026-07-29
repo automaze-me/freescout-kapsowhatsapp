@@ -4,10 +4,19 @@ namespace Modules\KapsoWhatsApp\Tests\Feature;
 
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class DataModelTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('secret-key');
+    }
+
     protected function makeAccount(array $overrides = []): KapsoAccount
     {
         $mailboxId = $overrides['mailbox_id'] ?? $this->testMailbox()->id;
@@ -20,22 +29,19 @@ class DataModelTest extends TestCase
             'mailbox_id'          => $mailboxId,
             'is_active'           => true,
         ], $overrides));
-        $account->api_key        = 'secret-key';
         $account->webhook_secret = 'secret-hmac';
         $account->save();
 
         return $account;
     }
 
-    public function test_secrets_are_encrypted_at_rest_but_readable_via_accessor()
+    public function test_webhook_secret_is_encrypted_at_rest_but_readable_via_accessor()
     {
         $account = $this->makeAccount();
 
         $raw = \DB::table('kapso_whatsapp_accounts')->where('id', $account->id)->first();
 
-        $this->assertNotSame('secret-key', $raw->api_key, 'api_key must not be stored in plaintext');
         $this->assertNotSame('secret-hmac', $raw->webhook_secret, 'webhook_secret must not be stored in plaintext');
-        $this->assertSame('secret-key', $account->fresh()->api_key);
         $this->assertSame('secret-hmac', $account->fresh()->webhook_secret);
     }
 
@@ -73,10 +79,10 @@ class DataModelTest extends TestCase
         $account = $this->makeAccount();
 
         \DB::table('kapso_whatsapp_accounts')->where('id', $account->id)->update([
-            'api_key' => 'not-valid-ciphertext',
+            'webhook_secret' => 'not-valid-ciphertext',
         ]);
 
-        $this->assertNull($account->fresh()->api_key);
+        $this->assertNull($account->fresh()->webhook_secret);
     }
 
     public function test_webhook_state_defaults_to_unregistered_and_unknown()
@@ -174,7 +180,6 @@ class DataModelTest extends TestCase
             'mailbox_id'      => $this->testMailbox()->id,
             'is_active'       => true,
         ]);
-        $account->api_key = 'key';
         $account->save();
 
         return $account;

@@ -7,10 +7,19 @@ use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Jobs\ProcessInboundMessage;
 use Modules\KapsoWhatsApp\Jobs\ReconcileOutboundMessage;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class ReconcileOutboundTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute.
+        Settings::setApiKey('key');
+    }
+
     protected function makeAccount(): KapsoAccount
     {
         $account = new KapsoAccount();
@@ -18,7 +27,6 @@ class ReconcileOutboundTest extends TestCase
             'name' => 'Support', 'phone_number_id' => '123456789012345',
             'mailbox_id' => $this->testMailbox()->id, 'is_active' => true,
         ]);
-        $account->api_key        = 'key';
         $account->webhook_secret = 'secret';
         $account->save();
 

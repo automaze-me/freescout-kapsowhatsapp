@@ -55,6 +55,10 @@ abstract class TestCase extends CoreTestCase
         SystemUser::clearCache();
         $this->deleteAttachmentFilesWrittenDuringThisTest();
 
+        // Option::$cache is a static that survives the DB rollback, so without
+        // this a key written by one test is still readable by the next.
+        \App\Option::$cache = [];
+
         parent::tearDown();
     }
 

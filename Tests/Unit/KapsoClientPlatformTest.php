@@ -12,6 +12,7 @@ use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
+use Modules\KapsoWhatsApp\Services\Settings;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 /**
@@ -20,11 +21,19 @@ use Modules\KapsoWhatsApp\Tests\TestCase;
  */
 class KapsoClientPlatformTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The API key is a module-wide setting, not a per-account attribute,
+        // so it is configured once here rather than on each account() call.
+        Settings::setApiKey('project-secret-key');
+    }
+
     protected function account(): KapsoAccount
     {
         $account                  = new KapsoAccount();
         $account->phone_number_id = '15550001111';
-        $account->api_key         = 'project-secret-key';
 
         return $account;
     }
@@ -182,8 +191,8 @@ class KapsoClientPlatformTest extends TestCase
         $history = [];
         $client  = $this->clientWithHistory([], $history);
 
-        $account          = $this->account();
-        $account->api_key = null;
+        $account = $this->account();
+        Settings::setApiKey(null);
 
         try {
             (new KapsoClient($account, $client))->listPhoneNumberWebhooks();

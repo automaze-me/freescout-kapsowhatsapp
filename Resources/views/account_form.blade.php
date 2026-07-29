@@ -32,14 +32,6 @@
             </div>
         </div>
 
-        <div class="form-group{{ $errors->has('api_key') ? ' has-error' : '' }}">
-            <label class="col-sm-2 control-label">{{ __('Kapso API Key') }}</label>
-            <div class="col-sm-6">
-                <input type="password" class="form-control" name="api_key" autocomplete="new-password" @if (!$account->id) required @endif>
-                @include('partials/field_error', ['field' => 'api_key'])
-            </div>
-        </div>
-
         <div class="form-group">
             <label class="col-sm-2 control-label">{{ __('Webhook Secret') }}</label>
             <div class="col-sm-6">
