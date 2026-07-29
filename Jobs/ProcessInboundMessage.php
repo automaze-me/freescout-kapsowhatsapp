@@ -73,6 +73,12 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
+        if (($message['type'] ?? '') === 'reaction') {
+            $this->applyReaction($account, $message, $wamid, $e164);
+
+            return;
+        }
+
         $mailbox = Mailbox::find($account->mailbox_id);
 
         if (!$mailbox) {
@@ -242,6 +248,19 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
+        // Reaction rows are inbound too, so the guard above does not exclude
+        // them. applyReaction() never calls this method directly (its caller
+        // in handle() returns first), but a *redelivered* reaction wamid hits
+        // the "$existing" dedupe branch near the top of handle(), which
+        // unconditionally calls this method for any already-seen wamid. Since
+        // a reaction's events_dispatched_at is never claimed at creation, that
+        // path would otherwise be free to claim it now and fire
+        // CustomerCreatedConversation/CustomerReplied against the *target*
+        // message's thread for something that is not a new customer message.
+        if ($kapsoMessage->status === 'reaction') {
+            return;
+        }
+
         // Resolved before the claim so that a missing thread/conversation
         // bails out without ever marking the row as dispatched — leaving it
         // eligible for a future retry to try again, instead of permanently
@@ -283,6 +302,55 @@ class ProcessInboundMessage implements ShouldQueue
                 'exception' => $e,
             ]);
         }
+    }
+
+    /**
+     * Reactions reference another message by id. Without a local wamid -> thread
+     * map there is nothing to attach them to, so an unplaceable reaction is
+     * dropped rather than surfacing as a stray thread.
+     */
+    protected function applyReaction(KapsoAccount $account, array $message, $wamid, $e164)
+    {
+        $targetWamid = $message['reaction']['message_id'] ?? null;
+        $emoji       = $message['reaction']['emoji'] ?? '';
+
+        $threadId = KapsoMessage::threadForWamid($targetWamid);
+
+        if (!$threadId) {
+            \Log::info('[KapsoWhatsApp] Reaction for an unknown message, dropped', [
+                'wamid'        => $wamid,
+                'target_wamid' => $targetWamid,
+            ]);
+
+            return;
+        }
+
+        $thread = Thread::find($threadId);
+
+        if (!$thread) {
+            return;
+        }
+
+        if ($emoji === '') {
+            // Removing a reaction: strip any previous marker.
+            $thread->body = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
+        } else {
+            $thread->body = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body)
+                .'<p class="kapsowhatsapp-reaction">'.__('Reaction:').' '.e($emoji).'</p>';
+        }
+
+        $thread->save();
+
+        KapsoMessage::create([
+            'account_id'            => $account->id,
+            'conversation_id'       => $thread->conversation_id,
+            'thread_id'             => $thread->id,
+            'wamid'                 => $wamid,
+            'kapso_conversation_id' => $this->payload['conversation']['id'] ?? null,
+            'direction'             => KapsoMessage::DIRECTION_INBOUND,
+            'status'                => 'reaction',
+            'contact_phone'         => $e164,
+        ]);
     }
 
     /**
