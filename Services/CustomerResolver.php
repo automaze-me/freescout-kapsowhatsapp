@@ -8,6 +8,19 @@ use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 class CustomerResolver
 {
     /**
+     * Country code used to interpret customer phone numbers stored locally
+     * in national format (see findUniqueByPhone()). Defaults to this
+     * installation's configured code rather than a hardcoded one — no
+     * configuration here is specific to one deployment.
+     */
+    protected $defaultCountryCode;
+
+    public function __construct(?string $defaultCountryCode = null)
+    {
+        $this->defaultCountryCode = $defaultCountryCode ?? PhoneNumber::configuredDefaultCountryCode();
+    }
+
+    /**
      * Resolve a WhatsApp number to a Customer.
      *
      * Order: existing channel identity -> unique exact phone match -> create.
@@ -50,9 +63,9 @@ class CustomerResolver
     {
         $bare = ltrim($e164, '+');
 
-        $defaultCountryCode = PhoneNumber::DEFAULT_COUNTRY_CODE;
+        $defaultCountryCode = $this->defaultCountryCode;
 
-        $national = strpos($bare, $defaultCountryCode) === 0
+        $national = ($defaultCountryCode !== '' && strpos($bare, $defaultCountryCode) === 0)
             ? substr($bare, strlen($defaultCountryCode))
             : $bare;
 
@@ -62,7 +75,7 @@ class CustomerResolver
 
         $matches = $candidates->filter(function ($customer) use ($e164) {
             foreach ($customer->getPhones() as $phone) {
-                if (PhoneNumber::toE164($phone['value'] ?? '') === $e164) {
+                if (PhoneNumber::toE164($phone['value'] ?? '', $this->defaultCountryCode) === $e164) {
                     return true;
                 }
             }

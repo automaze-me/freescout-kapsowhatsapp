@@ -20,8 +20,12 @@ class KapsoWhatsAppController extends Controller
     {
         $this->authorizeAdmin();
 
-        // Kapso silently pauses a webhook after a sustained failure rate, so a
-        // rising error count here is the earliest warning an admin gets.
+        // This counts WhatsApp *delivery* failures (KapsoMessage rows with an
+        // error, e.g. a message rejected for being outside the 24h customer
+        // service window) -- not Kapso's own webhook delivery failure rate,
+        // which is a separate, unrelated metric this page has no visibility
+        // into. A rising count here means messages are failing to reach
+        // customers, not that the webhook is at risk of Kapso's auto-pause.
         $failures = \Modules\KapsoWhatsApp\Entities\KapsoMessage::whereNotNull('error')
             ->where('created_at', '>=', now()->subDay())
             ->groupBy('account_id')

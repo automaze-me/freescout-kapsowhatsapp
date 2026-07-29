@@ -18,6 +18,7 @@ use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Services\ConversationResolver;
 use Modules\KapsoWhatsApp\Services\CustomerResolver;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
+use Modules\KapsoWhatsApp\Services\MessageBody;
 use Modules\KapsoWhatsApp\Services\PhoneNumber;
 
 class ProcessInboundMessage implements ShouldQueue
@@ -65,7 +66,7 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
-        $e164 = PhoneNumber::toE164($message['from'] ?? null);
+        $e164 = PhoneNumber::toE164($message['from'] ?? null, PhoneNumber::configuredDefaultCountryCode());
 
         if (!$e164) {
             \Log::warning('[KapsoWhatsApp] Inbound message without a usable sender number', ['wamid' => $wamid]);
@@ -511,31 +512,11 @@ class ProcessInboundMessage implements ShouldQueue
      */
     protected function body(array $message)
     {
-        $raw = $this->rawText($message);
+        $raw = MessageBody::extract($message);
 
         return [
             'raw'  => $raw,
             'html' => nl2br(e($raw, true)),
         ];
-    }
-
-    protected function rawText(array $message)
-    {
-        $text = $message['text']['body'] ?? null;
-
-        if (is_scalar($text) && trim((string) $text) !== '') {
-            return (string) $text;
-        }
-
-        $content = $message['kapso']['content'] ?? null;
-
-        if (is_scalar($content) && trim((string) $content) !== '') {
-            return (string) $content;
-        }
-
-        $type = $message['type'] ?? null;
-        $type = is_scalar($type) ? (string) $type : 'unknown';
-
-        return __('WhatsApp message: :type', ['type' => $type]);
     }
 }

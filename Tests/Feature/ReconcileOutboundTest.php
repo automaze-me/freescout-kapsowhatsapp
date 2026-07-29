@@ -113,6 +113,15 @@ class ReconcileOutboundTest extends TestCase
         $this->assertSame(Thread::TYPE_MESSAGE, (int) $thread->type);
         $this->assertStringContainsString('Reply from elsewhere', $thread->body);
         $this->assertTrue(KapsoMessage::seen('wamid.foreign'));
+
+        // Core's print view calls $thread->created_by_user_cached->getFullName()
+        // with no null guard for any non-customer thread -- fatal if
+        // created_by_user_id is null. No real FreeScout agent authored this
+        // thread, so it must be attributed to the module's synthetic user
+        // rather than left null.
+        $this->assertNotNull($thread->created_by_user_id,
+            'a module-created thread with no created_by_user_id makes core\'s print view fatal');
+        $this->assertNotNull($thread->created_by_user_cached);
     }
 
     public function test_a_failed_send_is_surfaced_on_the_conversation()
@@ -139,6 +148,22 @@ class ReconcileOutboundTest extends TestCase
         $lineItem = Thread::where('conversation_id', $conversationId)
             ->where('type', Thread::TYPE_LINEITEM)->orderBy('id', 'desc')->first();
         $this->assertNotNull($lineItem, 'a delivery failure must be visible on the conversation');
+
+        // The row existing is not the same as the agent seeing anything: core
+        // renders line items exclusively via getActionText() (never
+        // $thread->body directly -- see thread.blade.php), and
+        // Thread::getActionText() has no branch for a NULL action_type, which
+        // is exactly what this line item carries. Without
+        // KapsoWhatsAppServiceProvider's `thread.action_text` filter, this
+        // call returns '' and the conversation shows a blank grey bar with a
+        // timestamp and no text -- indistinguishable from success next to a
+        // normal-looking "Sent outside FreeScout" thread. This is the exact
+        // call thread.blade.php makes for a TYPE_LINEITEM thread.
+        $rendered = $lineItem->getActionText('', true, false, null, 'Some Agent');
+        $this->assertNotSame('', trim(strip_tags($rendered)),
+            'the failure line item must render visible text via getActionText(), not a blank bar');
+        $this->assertStringContainsString('131047', $rendered);
+        $this->assertStringContainsString(__('WhatsApp delivery failed:'), $rendered);
     }
 
     public function test_a_send_for_an_unknown_conversation_is_dropped_quietly()
@@ -148,6 +173,72 @@ class ReconcileOutboundTest extends TestCase
         (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.orphan')))->handle();
 
         $this->assertFalse(KapsoMessage::seen('wamid.orphan'));
+    }
+
+    /**
+     * Kapso's own docs state that `phone_number`, `from`, `to` and `wa_id`
+     * are not always present on every event. Before the fix, a missing `to`
+     * made recordForeignSend() give up immediately (with no log at all) --
+     * every reply sent from elsewhere for that event vanished without trace.
+     * `conversation.phone_number` is a second, independent field that can be
+     * present even when `to` is not.
+     */
+    public function test_a_missing_to_field_falls_back_to_conversation_phone_number()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+        $threadsBefore  = Thread::where('conversation_id', $conversationId)->count();
+
+        $payload = $this->sentPayload('wamid.no-to-field');
+        unset($payload['message']['to']);
+        $payload['conversation']['phone_number'] = '4915166666666';
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $payload))->handle();
+
+        $this->assertSame($threadsBefore + 1, Thread::where('conversation_id', $conversationId)->count(),
+            'a missing `to` must still resolve the conversation via conversation.phone_number');
+        $this->assertTrue(KapsoMessage::seen('wamid.no-to-field'));
+
+        $record = KapsoMessage::where('wamid', 'wamid.no-to-field')->firstOrFail();
+        $this->assertSame('+4915166666666', $record->contact_phone);
+        $this->assertEquals($conversationId, $record->conversation_id);
+    }
+
+    /**
+     * `kapso_conversation_id` is written on every row this module creates and
+     * otherwise never read anywhere -- it is the fallback key robust enough
+     * to survive a payload with no phone number field at all (neither `to`
+     * nor `conversation.phone_number`). This is the delivery-failure sibling
+     * of the test above: before the fix, recordFailureForUnknownSend() at
+     * least logged this case, but still dropped the failure with nowhere
+     * left to attach it.
+     */
+    public function test_a_failed_event_with_no_phone_number_at_all_falls_back_to_kapso_conversation_id()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+        $threadsBefore  = Thread::where('conversation_id', $conversationId)->count();
+
+        $payload = $this->failedPayload('wamid.no-phone-at-all');
+        unset($payload['message']['to']);
+        // No conversation.phone_number either: only conversation.id (matching
+        // the seeded row's kapso_conversation_id) survives in this payload.
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $payload))->handle();
+
+        $record = KapsoMessage::where('wamid', 'wamid.no-phone-at-all')->first();
+        $this->assertNotNull($record,
+            'a failure with no phone number field at all must still be recorded via kapso_conversation_id');
+        $this->assertEquals($conversationId, $record->conversation_id);
+        $this->assertSame('failed', $record->status);
+        $this->assertNull($record->contact_phone, 'no phone number was ever resolvable for this event');
+
+        $this->assertSame($threadsBefore + 2, Thread::where('conversation_id', $conversationId)->count(),
+            'must still produce both an outbound thread and a visible line item');
     }
 
     /**
@@ -186,11 +277,22 @@ class ReconcileOutboundTest extends TestCase
         $messageThread = Thread::find($record->thread_id);
         $this->assertSame(Thread::TYPE_MESSAGE, (int) $messageThread->type);
         $this->assertStringContainsString('Reply from elsewhere', $messageThread->body);
+        $this->assertNotNull($messageThread->created_by_user_id,
+            'a module-created thread with no created_by_user_id makes core\'s print view fatal');
 
         $lineItem = Thread::where('conversation_id', $conversationId)
             ->where('type', Thread::TYPE_LINEITEM)->orderBy('id', 'desc')->first();
         $this->assertNotNull($lineItem, 'a delivery failure must be visible on the conversation even with no prior row');
         $this->assertStringContainsString('131047', $lineItem->body);
+
+        // Same rendering guarantee as the "already known row" path above,
+        // exercised here via the other call site (recordFailureForUnknownSend
+        // -> createFailureLineItem): the body containing the text is not
+        // enough, core only ever renders getActionText().
+        $rendered = $lineItem->getActionText('', true, false, null, 'Some Agent');
+        $this->assertNotSame('', trim(strip_tags($rendered)),
+            'the failure line item must render visible text via getActionText(), not a blank bar');
+        $this->assertStringContainsString('131047', $rendered);
     }
 
     public function test_a_failed_event_for_an_unknown_conversation_is_dropped_quietly()

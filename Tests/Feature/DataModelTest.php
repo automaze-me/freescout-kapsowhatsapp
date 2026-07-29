@@ -10,12 +10,14 @@ class DataModelTest extends TestCase
 {
     protected function makeAccount(array $overrides = []): KapsoAccount
     {
+        $mailboxId = $overrides['mailbox_id'] ?? $this->testMailbox()->id;
+
         $account = new KapsoAccount();
         $account->fill(array_merge([
             'name'                => 'Support',
             'phone_number_id'     => '123456789012345',
             'business_account_id' => '999',
-            'mailbox_id'          => 1,
+            'mailbox_id'          => $mailboxId,
             'is_active'           => true,
         ], $overrides));
         $account->api_key        = 'secret-key';

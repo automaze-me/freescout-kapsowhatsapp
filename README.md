@@ -36,7 +36,24 @@ yet sent from FreeScout.
 
    Message events are delivered **only** to phone-number webhooks, not project webhooks.
 
+   Do **not** enable Kapso's message buffering (`buffer_enabled`) on this webhook: with buffering
+   on, the payload becomes a batch envelope with no top-level `phone_number_id`, so the middleware
+   rejects every delivery with a 403 and Kapso auto-pauses the webhook within about 15 minutes.
+
 6. Send yourself a WhatsApp message and check the mailbox.
+
+## Configuration
+
+- **Default country code.** Phone numbers typed locally into FreeScout in national format (a
+  single leading trunk zero, e.g. a German number written `0151 12345678`) need a country code to
+  normalise to E.164. Nothing here is specific to one deployment, so this is unset (no code
+  assumed) by default — WhatsApp itself always delivers `message.from`/`message.to` as bare
+  international digits, so this only matters for numbers agents type locally. If your install has
+  customers with locally-typed national-format numbers, set it once via `php artisan tinker`:
+
+  ```php
+  \Option::set('kapsowhatsapp.default_country_code', '49'); // bare digits, no "+"
+  ```
 
 ## Outbound event reconciliation
 

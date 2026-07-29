@@ -9,6 +9,17 @@ class KapsoMessage extends Model
     const DIRECTION_INBOUND  = 'inbound';
     const DIRECTION_OUTBOUND = 'outbound';
 
+    /**
+     * Thread::meta key set on the TYPE_LINEITEM thread ReconcileOutboundMessage
+     * creates for a WhatsApp delivery failure. Core's Thread::getActionText()
+     * has no branch for a line item with a NULL action_type (this module's
+     * failure line items never set one), so it would otherwise render as an
+     * empty bar with no visible text. KapsoWhatsAppServiceProvider hooks
+     * core's `thread.action_text` Eventy filter and checks this meta key to
+     * recognise "this is our own line item" and return its body text instead.
+     */
+    const LINEITEM_META_DELIVERY_FAILED = 'kapsowhatsapp_delivery_failed';
+
     protected $table = 'kapso_whatsapp_messages';
 
     protected $fillable = [

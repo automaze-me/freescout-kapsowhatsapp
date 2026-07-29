@@ -261,8 +261,16 @@ class WebhookSecurityTest extends TestCase
      * queued -- otherwise a transient queue outage combined with the old
      * "commit the key, then dispatch" ordering would cause every one of
      * Kapso's retries to be silently swallowed and the message lost forever.
+     *
+     * A dispatch/infrastructure failure must return a non-200 (503), not 200:
+     * Kapso only retries a delivery that did NOT get a 200 response, so a 200
+     * here would tell Kapso the message was handled when it was never even
+     * queued -- permanently losing it the moment Kapso stops retrying. The
+     * previous version of this test asserted 200 on the first (failing)
+     * delivery while its own comment and its second assertion assumed Kapso
+     * would retry -- a 200 response guarantees the opposite.
      */
-    public function test_a_job_dispatch_failure_still_returns_200_and_does_not_burn_the_retry()
+    public function test_a_job_dispatch_failure_returns_503_so_kapso_retries_and_does_not_burn_the_retry()
     {
         $this->makeAccount();
         $payload        = $this->payload();
@@ -305,10 +313,12 @@ class WebhookSecurityTest extends TestCase
             };
         });
 
-        // First delivery: the queue is down. Kapso must see 200 (a 5xx counts
-        // toward the auto-pause threshold), but the key must NOT be committed.
+        // First delivery: the queue is down. Kapso must see a non-200 so it
+        // actually retries -- a 200 here would tell Kapso the delivery was
+        // handled and it would never come back, permanently losing the
+        // message. The key must NOT be committed either.
         $this->postWebhook($payload, $this->sign($payload), 'whatsapp.message.received', [], $idempotencyKey)
-            ->assertStatus(200);
+            ->assertStatus(503);
 
         $this->assertFalse(\Cache::has($cacheKey), 'idempotency key must not be committed when dispatch fails');
 

@@ -1,6 +1,7 @@
 {
     "name": "automaze-me/freescout-kapsowhatsapp",
     "description": "WhatsApp as a communication channel for FreeScout, via the Kapso API.",
+    "license": "MIT",
     "authors": [
         {
             "name": "Jörn Bungartz - automaze.me",

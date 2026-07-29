@@ -5,10 +5,30 @@ namespace Modules\KapsoWhatsApp\Services;
 class PhoneNumber
 {
     /**
-     * Default country code used when a number is written in national format
-     * (a single leading trunk zero) without an explicit country code.
+     * Fallback default country code used when a number is written in
+     * national format (a single leading trunk zero) without an explicit
+     * country code, and no more specific code is available (see
+     * configuredDefaultCountryCode()). Empty on purpose: no configuration is
+     * specific to one deployment (see the design spec's Goals). WhatsApp
+     * itself always delivers `message.from`/`message.to` as bare
+     * international digits, so this only ever matters for phone numbers
+     * typed locally into FreeScout in national format — and guessing a
+     * country here is worse than declining to guess, since a wrong guess
+     * silently produces a bogus E.164 number instead of failing safe.
      */
-    const DEFAULT_COUNTRY_CODE = '49';
+    const DEFAULT_COUNTRY_CODE = '';
+
+    /**
+     * The country code this installation uses for national-format numbers,
+     * from the `kapsowhatsapp.default_country_code` option (Manage this via
+     * `Option::set('kapsowhatsapp.default_country_code', '49')`, bare
+     * digits, no "+"). Falls back to DEFAULT_COUNTRY_CODE (empty) when
+     * unset, matching the fail-safe default above.
+     */
+    public static function configuredDefaultCountryCode(): string
+    {
+        return (string) \Option::get('kapsowhatsapp.default_country_code', self::DEFAULT_COUNTRY_CODE);
+    }
 
     /**
      * Normalise to E.164 ("+" followed by digits).
@@ -16,15 +36,18 @@ class PhoneNumber
      * Deliberately dependency-free: WhatsApp always delivers `message.from` as
      * bare international digits, so full libphonenumber parsing would be
      * carrying a large dependency for one edge case (numbers typed by agents
-     * in national format).
+     * in national format). Deliberately does not read config/Option itself
+     * either — callers that need this installation's configured country code
+     * pass configuredDefaultCountryCode() explicitly, keeping this a pure,
+     * unit-testable function.
      */
-    public static function toE164($raw, $defaultCountryCode = self::DEFAULT_COUNTRY_CODE)
+    public static function toE164(?string $raw, string $defaultCountryCode = self::DEFAULT_COUNTRY_CODE): ?string
     {
         if ($raw === null) {
             return null;
         }
 
-        $trimmed = trim((string) $raw);
+        $trimmed = trim($raw);
 
         if ($trimmed === '') {
             return null;
@@ -44,6 +67,16 @@ class PhoneNumber
                 // so no default country code is prepended.
                 $digits = substr($digits, 2);
             } elseif (strpos($digits, '0') === 0) {
+                if ($defaultCountryCode === '') {
+                    // National trunk prefix, but no country code is known for
+                    // this installation: a bare national number cannot be
+                    // normalised to E.164 without guessing which country it
+                    // belongs to, and a wrong guess would silently merge or
+                    // miss customers. Decline rather than fabricate a bogus
+                    // number.
+                    return null;
+                }
+
                 // National trunk prefix: strip exactly the one leading zero
                 // and prepend the default country code.
                 $digits = $defaultCountryCode.substr($digits, 1);

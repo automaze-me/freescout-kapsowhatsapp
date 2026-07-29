@@ -59,5 +59,28 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
                 .'style="max-width:200px;max-height:200px;border-radius:4px;margin-top:6px;">'
                 .'</a></div>';
         }, 20, 4);
+
+        // ReconcileOutboundMessage::createFailureLineItem() posts a
+        // TYPE_LINEITEM thread for a WhatsApp delivery failure with
+        // action_type left NULL (core has no ACTION_TYPE_* for this and no
+        // hook to register one). Thread::getActionText() has no fallback
+        // branch for a NULL action_type -- it falls through to this filter
+        // with an empty string -- and thread.blade.php's TYPE_LINEITEM
+        // branch only ever renders getActionText(), never $thread->body. Left
+        // unhandled, the line item would render as an empty grey bar with a
+        // timestamp and no visible text: the agent sees nothing, exactly the
+        // failure mode this module exists to prevent. The meta flag (rather
+        // than e.g. matching on action_type/status) is what lets this filter
+        // recognise "this is our own line item" without guessing at other
+        // line items core or other modules may create with a NULL
+        // action_type for unrelated reasons.
+        \Eventy::addFilter('thread.action_text', function ($didThis, $thread, $conversationNumber, $escape, $viewedByUser) {
+            if ((int) $thread->type === \App\Thread::TYPE_LINEITEM
+                && $thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::LINEITEM_META_DELIVERY_FAILED)) {
+                return $thread->body;
+            }
+
+            return $didThis;
+        }, 20, 5);
     }
 }

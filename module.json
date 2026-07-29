@@ -6,6 +6,7 @@
     "detailsUrl": "https://github.com/automaze-me/freescout-kapsowhatsapp",
     "author": "automaze.me",
     "authorUrl": "https://automaze.me",
+    "license": "MIT",
     "requiredAppVersion": "1.8.128",
     "active": 1,
     "order": 0,

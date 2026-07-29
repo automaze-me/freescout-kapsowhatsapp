@@ -22,7 +22,9 @@
                 <th>{{ __('Mailbox') }}</th>
                 <th>{{ __('Active') }}</th>
                 <th>{{ __('Last webhook received') }}</th>
-                <th>{{ __('Failures (24h)') }}</th>
+                <th title="{{ __('Messages that failed to reach the customer in the last 24 hours (e.g. outside the 24h customer service window). This does not reflect Kapso\'s own webhook delivery success rate.') }}">
+                    {{ __('Delivery Failures (24h)') }}
+                </th>
                 <th></th>
             </tr>
         </thead>
@@ -41,7 +43,16 @@
                         0
                     @endif
                 </td>
-                <td><a href="{{ route('kapsowhatsapp.edit', ['id' => $account->id]) }}">{{ __('Edit') }}</a></td>
+                <td>
+                    <a href="{{ route('kapsowhatsapp.edit', ['id' => $account->id]) }}">{{ __('Edit') }}</a>
+                    &nbsp;|&nbsp;
+                    <form method="POST" action="{{ route('kapsowhatsapp.destroy', ['id' => $account->id]) }}"
+                          style="display:inline"
+                          onsubmit="return confirm('{{ __('Are you sure you want to delete this account?') }}');">
+                        {{ csrf_field() }}
+                        <button type="submit" class="btn-link text-danger" style="border:none;background:none;padding:0;cursor:pointer;">{{ __('Delete') }}</button>
+                    </form>
+                </td>
             </tr>
             @endforeach
         </tbody>

@@ -39,12 +39,14 @@ class CustomerResolverTest extends TestCase
         // Helper::phoneToNumeric() preserves that leading zero and never
         // substitutes a country code, so the prefilter must search on the
         // national significant number, not the full country-code-prefixed
-        // digit string, or this customer is invisible to it.
+        // digit string, or this customer is invisible to it. This depends on
+        // the installation's configured country code (no global default any
+        // more — see PhoneNumber), so this test passes it explicitly.
         $customer = Customer::createWithoutEmail(['first_name' => 'Frieda', 'last_name' => 'National']);
         $customer->setPhones([['value' => '0151 12345678', 'type' => 1]]);
         $customer->save();
 
-        $resolved = (new CustomerResolver())->resolve('+4915112345678', null);
+        $resolved = (new CustomerResolver('49'))->resolve('+4915112345678', null);
 
         $this->assertSame($customer->id, $resolved->id);
         $this->assertSame('+4915112345678', $resolved->getChannelId(KapsoAccount::CHANNEL));

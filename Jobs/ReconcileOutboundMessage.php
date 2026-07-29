@@ -11,7 +11,9 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\MessageBody;
 use Modules\KapsoWhatsApp\Services\PhoneNumber;
+use Modules\KapsoWhatsApp\Services\SystemUser;
 
 /**
  * `whatsapp.message.sent` and `whatsapp.message.failed` are deliberately NOT
@@ -113,17 +115,13 @@ class ReconcileOutboundMessage implements ShouldQueue
      */
     protected function recordForeignSend(KapsoAccount $account, array $message, $wamid)
     {
-        $e164 = PhoneNumber::toE164($message['to'] ?? null);
-
-        if (!$e164) {
-            return;
-        }
-
-        $conversationId = $this->resolveConversationId($account, $e164);
+        [$e164, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'sent');
 
         if (!$conversationId) {
-            \Log::info('[KapsoWhatsApp] Outbound event for an unknown conversation, dropped', ['wamid' => $wamid]);
-
+            // Already logged by resolveOutboundConversation() -- both the
+            // "no usable recipient identity at all" case and the "resolved a
+            // number/kapso_conversation_id but no matching conversation"
+            // case.
             return;
         }
 
@@ -133,13 +131,20 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
-        $body = $this->messageBody($message);
+        $body = MessageBody::extract($message);
 
         try {
             \DB::transaction(function () use ($account, $conversation, $message, $wamid, $body, $e164) {
                 $thread = new Thread();
                 $thread->conversation_id = $conversation->id;
                 $thread->user_id         = null;
+                // No real FreeScout agent authored this thread. Core assumes
+                // every TYPE_MESSAGE thread has a creator -- the print view
+                // dereferences created_by_user_cached with no null guard --
+                // so it is attributed to a dedicated synthetic user rather
+                // than left null, the same mechanism the bundled Workflows
+                // module uses for its own generated threads.
+                $thread->created_by_user_id = SystemUser::get()->id;
                 $thread->type            = Thread::TYPE_MESSAGE;
                 $thread->status          = Thread::STATUS_ACTIVE;
                 $thread->state           = Thread::STATE_PUBLISHED;
@@ -238,30 +243,29 @@ class ReconcileOutboundMessage implements ShouldQueue
      */
     protected function recordFailureForUnknownSend(KapsoAccount $account, array $message, $wamid, $summary)
     {
-        $e164 = PhoneNumber::toE164($message['to'] ?? null);
+        [$e164, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'failed');
 
-        if (!$e164) {
-            \Log::info('[KapsoWhatsApp] Delivery-failure event without a usable recipient number, dropped', ['wamid' => $wamid]);
-
-            return;
-        }
-
-        $conversationId = $this->resolveConversationId($account, $e164);
-        $conversation   = $conversationId ? Conversation::find($conversationId) : null;
+        $conversation = $conversationId ? Conversation::find($conversationId) : null;
 
         if (!$conversation) {
-            \Log::info('[KapsoWhatsApp] Delivery-failure event for an unknown conversation, dropped', ['wamid' => $wamid]);
-
+            // Already logged by resolveOutboundConversation() unless a
+            // conversation id resolved but pointed at a since-deleted
+            // Conversation row -- an edge case not worth its own log line.
             return;
         }
 
-        $body = $this->messageBody($message);
+        $body = MessageBody::extract($message);
 
         try {
             \DB::transaction(function () use ($account, $conversation, $wamid, $body, $e164, $summary) {
                 $thread = new Thread();
                 $thread->conversation_id = $conversation->id;
                 $thread->user_id         = null;
+                // See recordForeignSend(): no real agent authored this
+                // thread, so it is attributed to the module's synthetic user
+                // rather than left null (core's print view is fatal on a
+                // TYPE_MESSAGE thread with no created_by_user_id).
+                $thread->created_by_user_id = SystemUser::get()->id;
                 $thread->type            = Thread::TYPE_MESSAGE;
                 $thread->status          = Thread::STATUS_ACTIVE;
                 $thread->state           = Thread::STATE_PUBLISHED;
@@ -369,12 +373,21 @@ class ReconcileOutboundMessage implements ShouldQueue
         $lineItem->type            = Thread::TYPE_LINEITEM;
         $lineItem->status          = Thread::STATUS_NOCHANGE;
         $lineItem->state           = Thread::STATE_PUBLISHED;
+        // action_type is deliberately left NULL: core's ACTION_TYPE_* set has
+        // no "WhatsApp delivery failed" member, and there is no core hook to
+        // register a new one. body still carries the fully-translated,
+        // escaped text, which is what actually needs to reach the page — see
+        // the LINEITEM_META_DELIVERY_FAILED meta flag below and
+        // KapsoWhatsAppServiceProvider's `thread.action_text` filter, which is
+        // what makes core render this body instead of an empty action-text
+        // bar (getActionText() has no fallback for a NULL action_type).
         $lineItem->body            = __('WhatsApp delivery failed:').' '.e($summary);
         // Core defines only PERSON_CUSTOMER and PERSON_USER — there is no
         // PERSON_SYSTEM. A system-generated line item is attributed to the user side.
         $lineItem->source_via      = Thread::PERSON_USER;
         $lineItem->source_type     = Thread::SOURCE_TYPE_API;
         $lineItem->customer_id     = $conversation->customer_id;
+        $lineItem->setMeta(KapsoMessage::LINEITEM_META_DELIVERY_FAILED, true);
         $lineItem->save();
     }
 
@@ -416,29 +429,58 @@ class ReconcileOutboundMessage implements ShouldQueue
     }
 
     /**
-     * Prefer the typed text; fall back to Kapso's rendered representation,
-     * and finally to a translatable placeholder naming the message type —
-     * matching ProcessInboundMessage::rawText(), which guards the same
-     * "text.body missing" situation that would otherwise leave an
-     * essentially blank thread for a template or media send.
+     * Resolves the conversation a `sent`/`failed` outbound event should
+     * attach to. Kapso's own docs state that `phone_number`, `from`, `to`
+     * and `wa_id` are not always present on every event, so `message.to`
+     * alone is not a reliable key -- and previously, recordForeignSend()
+     * simply gave up (with no log line at all) whenever it was missing,
+     * silently dropping every reply sent from elsewhere for that event.
+     *
+     * Tries, in order:
+     *
+     *  1. `message.to`, normalised, matched via resolveConversationId()
+     *     against this module's own message history for the account.
+     *  2. `conversation.phone_number` -- a second, independent field Kapso
+     *     may populate even when `to` is missing -- matched the same way.
+     *  3. `kapso_conversation_id`, written on every row this module creates
+     *     and otherwise never read anywhere: the one identity that survives
+     *     even when the payload carries no usable phone number at all.
+     *
+     * Every dead end is logged (with $label distinguishing a `sent` event
+     * from a `failed` one) rather than silently dropped, so a vanishing
+     * event always leaves a trace to investigate.
+     *
+     * @return array{0: ?string, 1: ?int} [$e164, $conversationId]
      */
-    protected function messageBody(array $message)
+    protected function resolveOutboundConversation(KapsoAccount $account, array $message, $wamid, $label)
     {
-        $text = $message['text']['body'] ?? null;
+        $defaultCountryCode = PhoneNumber::configuredDefaultCountryCode();
 
-        if (is_scalar($text) && trim((string) $text) !== '') {
-            return (string) $text;
+        $e164 = PhoneNumber::toE164($message['to'] ?? null, $defaultCountryCode)
+            ?: PhoneNumber::toE164($this->payload['conversation']['phone_number'] ?? null, $defaultCountryCode);
+
+        $conversationId = $e164 ? $this->resolveConversationId($account, $e164) : null;
+
+        if (!$conversationId) {
+            $kapsoConversationId = $this->payload['conversation']['id'] ?? null;
+
+            if ($kapsoConversationId) {
+                $conversationId = KapsoMessage::where('kapso_conversation_id', $kapsoConversationId)
+                    ->where('account_id', $account->id)
+                    ->whereNotNull('conversation_id')
+                    ->orderBy('id', 'desc')
+                    ->value('conversation_id');
+            }
         }
 
-        $content = $message['kapso']['content'] ?? null;
-
-        if (is_scalar($content) && trim((string) $content) !== '') {
-            return (string) $content;
+        if (!$conversationId) {
+            if ($e164) {
+                \Log::info("[KapsoWhatsApp] Outbound {$label} event for an unknown conversation, dropped", ['wamid' => $wamid]);
+            } else {
+                \Log::info("[KapsoWhatsApp] Outbound {$label} event with no usable recipient identity (no `to`, no `conversation.phone_number`, no matching `kapso_conversation_id`), dropped", ['wamid' => $wamid]);
+            }
         }
 
-        $type = $message['type'] ?? null;
-        $type = is_scalar($type) ? (string) $type : 'unknown';
-
-        return __('WhatsApp message: :type', ['type' => $type]);
+        return [$e164, $conversationId];
     }
 }
