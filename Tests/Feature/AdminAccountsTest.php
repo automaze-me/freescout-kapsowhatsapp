@@ -319,7 +319,13 @@ class AdminAccountsTest extends TestCase
         $accountB = $this->makeAccount(['phone_number_id' => '700000000000003']);
 
         // The uniqueness rule rejects this before applyRequest() ever calls
-        // availableNumbers(), so no Kapso call is expected here.
+        // availableNumbers(), so no Kapso call is expected here. Install an
+        // empty fake queue rather than none at all: with no fake installed,
+        // an unexpected call would silently fall back to a real Guzzle
+        // client and could hang on a genuine outbound request while still
+        // passing -- an empty queue makes that regression throw instead.
+        $this->fakeResponses([]);
+
         $response = $this->actingAs($this->admin())->post(route('kapsowhatsapp.update', ['id' => $accountA->id]), [
             'name'            => $accountA->name,
             'phone_number_id' => $accountB->phone_number_id,

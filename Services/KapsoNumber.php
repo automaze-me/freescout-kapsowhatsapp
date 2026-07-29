@@ -27,17 +27,27 @@ class KapsoNumber
         return $name !== '' ? $name : self::text($record, 'name');
     }
 
-    public static function label(array $record)
+    /**
+     * The number's own display string -- what Meta shows for it, e.g.
+     * "+49 151 1" -- falling back to the Kapso-assigned id when Meta hasn't
+     * confirmed a number yet. Stable: unlike label(), never mixes in a
+     * quality rating, so it is safe to use as a last resort for a *stored*
+     * value (an account's name) rather than only a dropdown row that is
+     * rebuilt fresh from Kapso on every page load.
+     */
+    public static function displayNumber(array $record)
     {
         $number = self::text($record, 'display_phone_number');
 
-        if ($number === '') {
-            // No number Meta/Kapso has confirmed yet: the Kapso-assigned id
-            // is the only thing guaranteed to distinguish this row from any
-            // other, so it takes the number's place rather than being
-            // dropped.
-            $number = self::text($record, 'phone_number_id');
-        }
+        // No number Meta/Kapso has confirmed yet: the Kapso-assigned id is
+        // the only thing guaranteed to distinguish this row from any other,
+        // so it takes the number's place rather than being dropped.
+        return $number !== '' ? $number : self::text($record, 'phone_number_id');
+    }
+
+    public static function label(array $record)
+    {
+        $number = self::displayNumber($record);
 
         $name = self::humanName($record);
 

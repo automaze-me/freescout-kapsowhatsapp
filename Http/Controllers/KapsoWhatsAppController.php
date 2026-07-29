@@ -159,9 +159,11 @@ class KapsoWhatsAppController extends Controller
 
         $account = new KapsoAccount();
 
-        if (!$this->applyRequest($account, $request)) {
+        list($applied, $error) = $this->applyRequest($account, $request);
+
+        if (!$applied) {
             return redirect()->back()->withInput()
-                ->withErrors(['phone_number_id' => __('That number is not one of the WhatsApp numbers in your Kapso project. Reload the page and pick again.')]);
+                ->withErrors(['phone_number_id' => $error]);
         }
 
         $account->save();
@@ -200,9 +202,11 @@ class KapsoWhatsAppController extends Controller
             'mailbox_id'      => 'required|integer|exists:mailboxes,id',
         ]);
 
-        if (!$this->applyRequest($account, $request)) {
+        list($applied, $error) = $this->applyRequest($account, $request);
+
+        if (!$applied) {
             return redirect()->back()->withInput()
-                ->withErrors(['phone_number_id' => __('That number is not one of the WhatsApp numbers in your Kapso project. Reload the page and pick again.')]);
+                ->withErrors(['phone_number_id' => $error]);
         }
 
         $account->save();
@@ -331,20 +335,30 @@ class KapsoWhatsAppController extends Controller
     /**
      * The two Meta identifiers are looked up in Kapso's own list rather than
      * read from the request, so a tampered form cannot bind an account to an
-     * arbitrary phone number or business account. Returns false when the
-     * submitted number is not in the project.
+     * arbitrary phone number or business account.
+     *
+     * Returns [success, error]. Kapso being unreachable and the submitted
+     * number simply not being in the project are different failures and must
+     * not be reported the same way: a Kapso outage is not evidence of bad
+     * data, and telling an admin "that number is not in your project" during
+     * an outage reads as data corruption, not as "try again in a minute".
+     * Either way nothing is written -- this stays fail-closed.
      *
      * The webhook secret is not a form field at all: WebhookRegistrar mints it
      * at registration time so FreeScout and Kapso cannot hold different values.
      */
     protected function applyRequest(KapsoAccount $account, Request $request)
     {
-        list($numbers) = $this->availableNumbers();
+        list($numbers, $numbersError) = $this->availableNumbers();
+
+        if ($numbersError) {
+            return [false, $numbersError];
+        }
 
         $record = KapsoNumber::find($numbers, $request->input('phone_number_id'));
 
         if (!$record) {
-            return false;
+            return [false, __('That number is not one of the WhatsApp numbers in your Kapso project. Reload the page and pick again.')];
         }
 
         $name = trim((string) $request->input('name'));
@@ -353,13 +367,16 @@ class KapsoWhatsAppController extends Controller
             // The number's own human name (e.g. "Acme GmbH"), not the fuller
             // "+49 151 1 — Acme GmbH" label() builds for the dropdown: this
             // is naming one already-chosen account, not disambiguating it
-            // from a list. Only falls back to the full label when Kapso has
+            // from a list. Only falls back to displayNumber() when Kapso has
             // given neither verified_name nor name, so the account can never
-            // end up with a blank one.
+            // end up with a blank one -- and never to label(), which can
+            // append a quality rating: that is a moment-in-time signal, and
+            // baking it into a stored name would leave the account
+            // permanently misnamed once the rating recovers.
             $name = KapsoNumber::humanName($record);
 
             if ($name === '') {
-                $name = KapsoNumber::label($record);
+                $name = KapsoNumber::displayNumber($record);
             }
         }
 
@@ -371,6 +388,6 @@ class KapsoWhatsAppController extends Controller
         $account->mailbox_id          = (int) $request->input('mailbox_id');
         $account->is_active           = (bool) $request->input('is_active');
 
-        return true;
+        return [true, null];
     }
 }

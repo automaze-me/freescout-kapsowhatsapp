@@ -131,4 +131,26 @@ class KapsoNumberTest extends TestCase
         $this->assertNotSame('', trim($label));
         $this->assertStringContainsString('RED', $label);
     }
+
+    /**
+     * displayNumber() is the stable last-resort value applyRequest() names an
+     * account with -- unlike label(), it must never carry a quality rating,
+     * which is a moment-in-time signal that would otherwise get baked into a
+     * stored name.
+     */
+    public function test_display_number_never_includes_a_quality_rating()
+    {
+        $number = KapsoNumber::displayNumber([
+            'phone_number_id'      => '1',
+            'display_phone_number' => '+49 151 1',
+            'quality_rating'       => 'RED',
+        ]);
+
+        $this->assertSame('+49 151 1', $number);
+    }
+
+    public function test_display_number_falls_back_to_the_phone_number_id()
+    {
+        $this->assertSame('1234567890', KapsoNumber::displayNumber(['phone_number_id' => '1234567890']));
+    }
 }

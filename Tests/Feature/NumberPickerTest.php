@@ -198,4 +198,88 @@ class NumberPickerTest extends TestCase
 
         $this->assertSame('Acme GmbH', KapsoAccount::where('phone_number_id', '111')->first()->name);
     }
+
+    /**
+     * The last-resort name fallback must not bake in a moment-in-time
+     * quality rating: label() appends " (RED)"/" (YELLOW)" for a dropdown
+     * row that is rebuilt fresh from Kapso on every page load, but a stored
+     * account name is not a dropdown row -- a recovered rating must not
+     * leave the account permanently misnamed.
+     */
+    public function test_a_blank_name_falls_back_to_the_number_not_a_quality_rating()
+    {
+        Settings::setApiKey('key-abc');
+        $this->fakeResponses([$this->numbersResponse([
+            ['phone_number_id' => '333', 'business_account_id' => 'waba-3', 'display_phone_number' => '+49 151 3', 'quality_rating' => 'RED'],
+        ])]);
+
+        $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.store'), [
+            'name'            => '',
+            'phone_number_id' => '333',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => 1,
+        ])->assertStatus(302);
+
+        $this->assertSame('+49 151 3', KapsoAccount::where('phone_number_id', '333')->first()->name);
+    }
+
+    protected function sessionErrorMessage($field)
+    {
+        return app('session.store')->get('errors')->getBag('default')->first($field);
+    }
+
+    /**
+     * A Kapso outage on save must not be reported as if the submitted number
+     * were invalid: an admin who knows perfectly well the number is right
+     * reads "that number is not in your project" as data corruption. Nothing
+     * is written either way -- this stays fail-closed regardless of which
+     * message is shown.
+     */
+    public function test_a_kapso_outage_on_create_reports_the_outage_not_a_bad_number()
+    {
+        Settings::setApiKey('key-abc');
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+
+        $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.store'), [
+            'name'            => 'Support',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => 1,
+        ])->assertStatus(302)->assertSessionHasErrors('phone_number_id');
+
+        $message = $this->sessionErrorMessage('phone_number_id');
+
+        $this->assertStringContainsString('Kapso', $message);
+        $this->assertStringNotContainsString('is not one of the WhatsApp numbers', $message);
+        $this->assertNull(KapsoAccount::where('phone_number_id', '111')->first());
+    }
+
+    public function test_a_kapso_outage_on_update_reports_the_outage_not_a_bad_number()
+    {
+        Settings::setApiKey('key-abc');
+
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Existing',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->save();
+
+        $this->fakeResponses([new Response(500, [], json_encode(['error' => 'boom']))]);
+
+        $this->actingAs($this->adminUser())->post(route('kapsowhatsapp.update', ['id' => $account->id]), [
+            'name'            => 'Existing',
+            'phone_number_id' => '111',
+            'mailbox_id'      => $account->mailbox_id,
+            'is_active'       => 1,
+        ])->assertStatus(302)->assertSessionHasErrors('phone_number_id');
+
+        $message = $this->sessionErrorMessage('phone_number_id');
+
+        $this->assertStringContainsString('Kapso', $message);
+        $this->assertStringNotContainsString('is not one of the WhatsApp numbers', $message);
+        $this->assertSame('Existing', $account->fresh()->name);
+    }
 }
