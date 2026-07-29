@@ -16,10 +16,11 @@ class KapsoAccount extends Model
     ];
 
     protected $casts = [
-        'is_active' => 'boolean',
+        'is_active'      => 'boolean',
+        'webhook_active' => 'boolean',
     ];
 
-    protected $dates = ['last_webhook_at'];
+    protected $dates = ['last_webhook_at', 'webhook_checked_at'];
 
     public function mailbox()
     {
@@ -35,6 +36,33 @@ class KapsoAccount extends Model
         return self::where('phone_number_id', (string) $phoneNumberId)
             ->where('is_active', true)
             ->first();
+    }
+
+    public function isWebhookRegistered()
+    {
+        return (bool) $this->webhook_id;
+    }
+
+    /**
+     * Kapso pauses a webhook after a run of failed deliveries and never
+     * resumes it on its own. Only meaningful for a webhook we registered:
+     * webhook_active is null until Kapso has actually been asked.
+     */
+    public function isWebhookPaused()
+    {
+        return $this->isWebhookRegistered() && $this->webhook_active === false;
+    }
+
+    /**
+     * True when the webhook was registered against a different URL than this
+     * install now advertises -- an APP_URL edit, a new domain, or an admin
+     * who registered while browsing FreeScout on a second hostname.
+     */
+    public function webhookUrlHasMoved($currentUrl)
+    {
+        return $this->isWebhookRegistered()
+            && $this->webhook_url
+            && $this->webhook_url !== $currentUrl;
     }
 
     public function setApiKeyAttribute($value)

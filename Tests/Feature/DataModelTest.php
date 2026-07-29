@@ -78,4 +78,61 @@ class DataModelTest extends TestCase
 
         $this->assertNull($account->fresh()->api_key);
     }
+
+    public function test_webhook_state_defaults_to_unregistered_and_unknown()
+    {
+        $account = $this->makeAccountForWebhookState();
+
+        $this->assertNull($account->webhook_id);
+        $this->assertNull($account->webhook_active, 'webhook_active must stay null until Kapso has actually been asked');
+        $this->assertFalse($account->isWebhookRegistered());
+        $this->assertFalse($account->isWebhookPaused());
+    }
+
+    public function test_a_registered_webhook_reports_registered_paused_and_moved()
+    {
+        $account                     = $this->makeAccountForWebhookState();
+        $account->webhook_id         = '9e8d7c6b-5a4f-3e2d-1c0b-9a8f7e6d5c4b';
+        $account->webhook_url        = 'https://help.example.com/kapso-whatsapp/webhook';
+        $account->webhook_active     = false;
+        $account->webhook_checked_at = now();
+        $account->save();
+
+        $account = $account->fresh();
+
+        $this->assertTrue($account->isWebhookRegistered());
+        $this->assertTrue($account->isWebhookPaused());
+        $this->assertFalse($account->webhookUrlHasMoved('https://help.example.com/kapso-whatsapp/webhook'));
+        $this->assertTrue($account->webhookUrlHasMoved('https://new.example.com/kapso-whatsapp/webhook'));
+        $this->assertInstanceOf(\Carbon\Carbon::class, $account->webhook_checked_at);
+        $this->assertFalse($account->webhook_active, 'webhook_active must round-trip as a real boolean, not "0"');
+    }
+
+    /**
+     * An account that has never been registered must not be reported as
+     * "paused" -- paused is a statement about a webhook that exists.
+     */
+    public function test_an_unregistered_account_is_never_reported_as_paused()
+    {
+        $account                 = $this->makeAccountForWebhookState();
+        $account->webhook_active = false;
+        $account->save();
+
+        $this->assertFalse($account->fresh()->isWebhookPaused());
+    }
+
+    protected function makeAccountForWebhookState(): KapsoAccount
+    {
+        $account = new KapsoAccount();
+        $account->fill([
+            'name'            => 'Support',
+            'phone_number_id' => '1'.uniqid(),
+            'mailbox_id'      => $this->testMailbox()->id,
+            'is_active'       => true,
+        ]);
+        $account->api_key = 'key';
+        $account->save();
+
+        return $account;
+    }
 }
