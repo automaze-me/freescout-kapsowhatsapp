@@ -20,6 +20,12 @@ class KapsoMessage extends Model
      */
     const LINEITEM_META_DELIVERY_FAILED = 'kapsowhatsapp_delivery_failed';
 
+    const SEND_STATE_SENDING  = 'sending';
+    const SEND_STATE_ACCEPTED = 'accepted';
+    const SEND_STATE_FAILED   = 'failed';
+
+    const PART_BODY = 'body';
+
     protected $table = 'kapso_whatsapp_messages';
 
     protected $fillable = [
@@ -54,6 +60,16 @@ class KapsoMessage extends Model
         $threadId = self::where('wamid', $wamid)->value('thread_id');
 
         return $threadId === null ? null : (int) $threadId;
+    }
+
+    public static function partKeyForBodyChunk($i)
+    {
+        return $i === 0 ? self::PART_BODY : self::PART_BODY.':'.($i + 1);
+    }
+
+    public static function partKeyForAttachment($attachmentId)
+    {
+        return 'att:'.$attachmentId;
     }
 
     /**

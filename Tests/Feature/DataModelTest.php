@@ -184,4 +184,49 @@ class DataModelTest extends TestCase
 
         return $account;
     }
+
+    public function test_the_send_part_claim_is_unique_per_thread_and_part()
+    {
+        $account = $this->makeAccountForWebhookState();
+
+        $mk = function () use ($account) {
+            $m = new KapsoMessage();
+            $m->account_id = $account->id;
+            $m->direction  = KapsoMessage::DIRECTION_OUTBOUND;
+            $m->thread_id  = 4242;
+            $m->part_key   = KapsoMessage::PART_BODY;
+            $m->send_state = KapsoMessage::SEND_STATE_SENDING;
+            $m->save();
+
+            return $m;
+        };
+
+        $mk();
+
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        $mk();
+    }
+
+    public function test_rows_without_a_part_key_do_not_collide_on_the_claim_index()
+    {
+        $account = $this->makeAccountForWebhookState();
+
+        foreach ([1, 2] as $i) {
+            $m = new KapsoMessage();
+            $m->account_id = $account->id;
+            $m->direction  = KapsoMessage::DIRECTION_INBOUND;
+            $m->thread_id  = 5151; // same thread, NULL part_key twice — must both insert
+            $m->wamid      = 'wamid-nullpart-'.$i.uniqid();
+            $m->save();
+        }
+
+        $this->assertSame(2, KapsoMessage::where('thread_id', 5151)->count());
+    }
+
+    public function test_part_key_helpers()
+    {
+        $this->assertSame('body', KapsoMessage::partKeyForBodyChunk(0));
+        $this->assertSame('body:2', KapsoMessage::partKeyForBodyChunk(1));
+        $this->assertSame('att:17', KapsoMessage::partKeyForAttachment(17));
+    }
 }
