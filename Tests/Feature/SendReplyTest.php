@@ -99,7 +99,11 @@ class SendReplyTest extends TestCase
         $inbound->conversation_id = $conversation->id;
         $inbound->direction       = KapsoMessage::DIRECTION_INBOUND;
         $inbound->wamid           = $wamid;
-        $inbound->contact_phone   = '491771234567';
+        // "+"-prefixed, matching what ProcessInboundMessage actually writes
+        // (PhoneNumber::toE164()) -- a bare-digit fixture here would hide a
+        // regression where the job forgets to strip the "+" for Meta's `to`
+        // field, since the strip would then be a silent no-op.
+        $inbound->contact_phone   = '+491771234567';
         $inbound->status          = 'received';
         $inbound->save();
 
@@ -161,8 +165,15 @@ class SendReplyTest extends TestCase
         $sendRequest = $this->history[0]['request'];
         $sendBody    = $this->jsonBodyOf(0);
 
-        $this->assertSame('Hello & welcome', $sendBody['text']['body']);
-        $this->assertSame('491771234567', $sendBody['to']);
+        // Full payload, not just the fields that happen to matter today --
+        // a stray/missing key elsewhere in the shape (messaging_product,
+        // type) would otherwise slip past unnoticed.
+        $this->assertSame([
+            'messaging_product' => 'whatsapp',
+            'to'                => '491771234567',
+            'type'              => 'text',
+            'text'              => ['body' => 'Hello & welcome'],
+        ], $sendBody);
         $this->assertStringContainsString(
             'https://api.kapso.ai/meta/whatsapp/v24.0/'.$account->phone_number_id.'/messages',
             (string) $sendRequest->getUri()
@@ -171,6 +182,11 @@ class SendReplyTest extends TestCase
         $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
         $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
         $this->assertSame('wamid.OUT1', $row->wamid);
+        // The stored column must stay "+"-prefixed E.164, verbatim from the
+        // inbound row -- not the bare digits sent to Meta -- or
+        // ReconcileOutboundMessage::resolveConversationId()'s exact match
+        // against this same column silently stops finding this conversation.
+        $this->assertSame('+491771234567', $row->contact_phone);
 
         $markReadBody = $this->jsonBodyOf(1);
         $this->assertSame('wamid.IN1', $markReadBody['message_id']);
@@ -190,8 +206,17 @@ class SendReplyTest extends TestCase
 
         $rowsBefore = KapsoMessage::where('thread_id', $thread->id)->count();
 
-        // An empty queue: any attempted HTTP call throws (MockHandler
-        // exhausted), so this run only passes if it makes zero requests.
+        // An empty queue does not, on its own, prove nothing was sent: the
+        // job always re-fires markMessageRead() after the loop regardless of
+        // whether any part actually needed sending (it is idempotent and
+        // best-effort), and that alone would exhaust this empty queue and
+        // throw. But markReadBestEffort() catches that throw internally and
+        // never lets it surface, so it proves nothing either way -- only a
+        // *send* attempt (claimAndSend() has no such catch) would actually
+        // propagate out of handle() and fail this test. The real proof that
+        // nothing was resent is the row-state assertions below: an
+        // already-`accepted` part must keep its row count and wamid exactly
+        // as run 1 left them.
         $this->fakeResponses([]);
 
         (new SendReplyMessage($thread->id))->handle();
@@ -337,7 +362,7 @@ class SendReplyTest extends TestCase
         // in this environment, including a bare core-only fixture with no
         // KapsoWhatsApp involvement at all (confirmed with a throwaway
         // diagnostic test) -- `old('body', $conversation->body)` in
-        // resources/views/conversations/reply.blade.php passes null into
+        // resources/views/conversations/view.blade.php:332 passes null into
         // e()/htmlspecialchars(), which PHP 8.1+ deprecates and this app's
         // error_reporting(-1) turns into a fatal ErrorException. That is a
         // pre-existing, unrelated core bug, not something introduced by this
@@ -441,5 +466,106 @@ class SendReplyTest extends TestCase
             $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count(),
                 'no line item until the retries are actually exhausted');
         }
+    }
+
+    /**
+     * The chunk test above (test_a_long_reply_is_chunked_not_doomed) uses
+     * plain ASCII, where a byte-based str_split() and the actual
+     * mb_str_split() implementation happen to produce identical results --
+     * every ASCII character is exactly one byte, so that test alone would
+     * stay green even if mb_str_split() regressed to str_split(). 'ä' is two
+     * UTF-8 bytes, so a byte-based split landing mid-character would show up
+     * here as a chunk whose mb_strlen() isn't 4000 and/or that isn't valid
+     * UTF-8, where the character-based mb_str_split() this job actually uses
+     * stays exactly 4000 characters and valid UTF-8.
+     */
+    public function test_a_long_multibyte_reply_is_chunked_on_character_boundaries()
+    {
+        $longText = str_repeat('ä', 4500);
+        [$account, $conversation, $inbound, $thread] = $this->scenario(['body' => '<p>'.$longText.'</p>']);
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-1']]])),
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-2']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $chunk = $this->jsonBodyOf(0)['text']['body'];
+
+        $this->assertSame(4000, mb_strlen($chunk));
+        $this->assertTrue(mb_check_encoding($chunk, 'UTF-8'));
+    }
+
+    /**
+     * Helper::htmlToText() passes its argument straight into
+     * str_ireplace()/Html2Text, which reject null; an attachment-only reply
+     * leaves $thread->body NULL (not ''), and this app escalates that
+     * deprecation to a fatal ErrorException (verified live) -- not a
+     * KapsoApiException, so it would previously burn every retry with the
+     * attachment never sent and no line item either. Guards the
+     * `(string) $thread->body` cast in parts().
+     */
+    public function test_a_null_body_thread_with_an_attachment_still_sends_the_attachment()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario(['body' => null]);
+
+        $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
+
+        $row = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))
+            ->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+        $this->assertSame('wamid.OUT-IMG', $row->wamid);
+
+        $imageBody = $this->jsonBodyOf(0);
+        $this->assertSame('image', $imageBody['type']);
+    }
+
+    /**
+     * failed() is the safety net Laravel's queue worker calls automatically
+     * once retries are exhausted for any exception handle()'s own catch
+     * block does not itself recognise (only KapsoApiException is caught
+     * there) -- see the class docblock and failed()'s own. Exercised
+     * directly here, the same way the real queue worker would invoke it,
+     * against a row left `sending` as if a previous attempt had crashed
+     * mid-send, rather than trying to coax a genuine non-KapsoApiException
+     * throw out of the HTTP mock.
+     */
+    public function test_failed_hook_marks_sending_parts_failed_and_posts_one_line_item()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $row = new KapsoMessage();
+        $row->account_id      = $account->id;
+        $row->conversation_id = $conversation->id;
+        $row->thread_id       = $thread->id;
+        $row->part_key        = KapsoMessage::PART_BODY;
+        $row->direction       = KapsoMessage::DIRECTION_OUTBOUND;
+        $row->send_state      = KapsoMessage::SEND_STATE_SENDING;
+        $row->contact_phone   = $inbound->contact_phone;
+        $row->save();
+
+        (new SendReplyMessage($thread->id))->failed(new \RuntimeException('worker process was killed'));
+
+        $row = $row->fresh();
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
+        $this->assertStringContainsString('worker process was killed', (string) $row->error);
+
+        $lineItems = Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->get();
+        $this->assertCount(1, $lineItems);
+        $this->assertStringContainsString('worker process was killed', $lineItems->first()->body);
     }
 }
