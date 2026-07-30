@@ -10,6 +10,7 @@ use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
 class KapsoClient
 {
     const PLATFORM_BASE = 'https://api.kapso.ai/platform/v1';
+    const META_BASE = 'https://api.kapso.ai/meta/whatsapp/v24.0';
 
     /**
      * Kapso pages the phone-numbers endpoint (default 20), so a project with
@@ -178,6 +179,53 @@ class KapsoClient
         return $numbers;
     }
 
+    /**
+     * Sends one WhatsApp message through Kapso's Meta-compatible proxy.
+     * Returns the decoded response (contains the wamid on success); throws
+     * KapsoApiException on any non-2xx response or transport failure.
+     */
+    public function sendWhatsAppMessage(array $payload)
+    {
+        return $this->metaRequest(
+            'POST',
+            '/'.rawurlencode((string) $this->account->phone_number_id).'/messages',
+            $payload
+        );
+    }
+
+    /**
+     * Pulls the wamid Meta assigned to a just-sent message out of the send
+     * response. Total on malformed input: anything short of a well-formed
+     * {"messages":[{"id":"..."}]} shape returns null rather than throwing,
+     * since callers use this to decide what to persist, not to validate
+     * Kapso's response.
+     */
+    public static function extractWamid($response)
+    {
+        if (!is_array($response) || !isset($response['messages']) || !is_array($response['messages'])) {
+            return null;
+        }
+
+        $first = reset($response['messages']);
+
+        return (is_array($first) && isset($first['id']) && is_string($first['id'])) ? $first['id'] : null;
+    }
+
+    /**
+     * Marks an inbound message read (blue ticks for the customer). Throws on
+     * failure like every other call here -- this is best-effort only in the
+     * sense that callers may choose to swallow the exception, not because
+     * this method hides it.
+     */
+    public function markMessageRead($wamid)
+    {
+        $this->metaRequest('POST', '/'.rawurlencode((string) $this->account->phone_number_id).'/messages', [
+            'messaging_product' => 'whatsapp',
+            'status'            => 'read',
+            'message_id'        => (string) $wamid,
+        ]);
+    }
+
     protected function webhooksPath()
     {
         return '/whatsapp/phone_numbers/'.rawurlencode((string) $this->account->phone_number_id).'/webhooks';
@@ -194,12 +242,30 @@ class KapsoClient
     }
 
     /**
+     * Thin wrapper kept for every existing Platform API caller: same
+     * signature, same behaviour, just delegates URL-building to apiRequest().
+     */
+    protected function platformRequest($method, $path, array $body = null, array $query = [])
+    {
+        return $this->apiRequest($method, self::PLATFORM_BASE.$path, $body, $query);
+    }
+
+    /**
+     * Meta-proxy counterpart of platformRequest(). No query-string callers
+     * exist yet, so it only forwards $body.
+     */
+    protected function metaRequest($method, $path, array $body = null)
+    {
+        return $this->apiRequest($method, self::META_BASE.$path, $body);
+    }
+
+    /**
      * http_errors is off so every failure -- 401, 404, 422, 5xx -- comes back
      * through one place and turns into an admin-readable message. Timeouts are
      * deliberately short: this runs inside an admin page request, not a queue
      * worker.
      */
-    protected function platformRequest($method, $path, array $body = null, array $query = [])
+    protected function apiRequest($method, $url, array $body = null, array $query = [])
     {
         $apiKey = Settings::apiKey();
 
@@ -228,7 +294,7 @@ class KapsoClient
         }
 
         try {
-            $response = $this->client->request($method, self::PLATFORM_BASE.$path, $options);
+            $response = $this->client->request($method, $url, $options);
         } catch (\Exception $e) {
             throw new KapsoApiException(
                 __('Could not reach Kapso: :error', ['error' => $this->sanitise($e->getMessage())]),
@@ -248,15 +314,25 @@ class KapsoClient
     }
 
     /**
-     * These strings are the module's answer to "registration failed". Each one
-     * names what the admin has to change. None of them ever suggests
-     * registering the webhook by hand.
+     * These strings are the module's answer to "the API call failed", shared
+     * by both the Platform API (webhook management) and the Meta proxy
+     * (sending). Each one names what the admin has to change. None of them
+     * ever suggests a manual fallback (registering the webhook by hand,
+     * sending the message by hand).
      */
     protected function errorMessage($status, $decoded)
     {
-        $detail = (is_array($decoded) && isset($decoded['error']) && is_string($decoded['error']))
-            ? $this->sanitise($decoded['error'])
-            : '';
+        // Platform API errors are {"error":"string"}; Meta-proxy errors are
+        // {"error":{"message":...,"code":...}} objects. Handle both shapes so
+        // a send rejection surfaces its text instead of "no details given".
+        $detail = '';
+        if (is_array($decoded) && isset($decoded['error'])) {
+            if (is_string($decoded['error'])) {
+                $detail = $this->sanitise($decoded['error']);
+            } elseif (is_array($decoded['error']) && isset($decoded['error']['message']) && is_string($decoded['error']['message'])) {
+                $detail = $this->sanitise($decoded['error']['message']);
+            }
+        }
 
         switch ($status) {
             case 401:
