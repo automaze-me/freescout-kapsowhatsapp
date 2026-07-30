@@ -38,6 +38,18 @@ class KapsoMessage extends Model
      * reply. It can be (re-)stamped only by
      * ReconcileOutboundMessage::markOwnSendSent(), and only while the thread
      * has no failed part at the moment it runs.
+     *
+     * Accepted residual: this still assumes a single worker (the only
+     * supported FreeScout configuration -- core's own Kernel.php actively
+     * kills extra worker processes). With 2+ workers, a concurrent
+     * sent(part A) / failed(part B) pair for the same multi-part reply can
+     * interleave markOwnSendSent()'s sibling-check and applyFailureToRow()'s
+     * claim-and-clear such that the sibling check runs, finds nothing failed
+     * yet, and stamps the marker *after* the failure's own clear has already
+     * run -- leaving the marker standing next to a recorded failure. Same
+     * accepted-residue category as the wamid-crash double-send window
+     * documented on SendReplyMessage's own class docblock, not something
+     * either method's own claim/gate can rule out on its own.
      */
     const THREAD_META_SENT_AT = 'kapsowhatsapp_sent_at';
 

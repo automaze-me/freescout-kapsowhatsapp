@@ -363,6 +363,15 @@ class SendReplyMessage implements ShouldQueue
 
         $response = $client->sendWhatsAppMessage($this->buildPayload($to, $part));
 
+        // extractWamid() returns null, rather than throwing, for a
+        // malformed-but-2xx response (no `messages[0].id`): the part still
+        // lands here `accepted` with `wamid` NULL. Safe -- no re-send is
+        // triggered (claimAndSend()'s skip check above is keyed on
+        // send_state, not on wamid being present), and the unique index on
+        // `wamid` allows multiple NULLs -- but that one reply can then never
+        // receive the sent marker (ReconcileOutboundMessage::markOwnSendSent()
+        // only ever matches on wamid) nor a webhook-reported failure for the
+        // same reason.
         $row->wamid      = KapsoClient::extractWamid($response);
         $row->send_state = KapsoMessage::SEND_STATE_ACCEPTED;
         $row->save();

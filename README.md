@@ -72,6 +72,10 @@ If the send itself is rejected at request time (Kapso's API declines it, rather 
 and reporting a failure later via webhook), the same red delivery-failure line item described below
 appears immediately — this is not only a webhook-driven outcome.
 
+Attachment replies hand Kapso a link built from the install's own `APP_URL`, so an install that
+isn't reachable from the public internet will have every attachment reply rejected (surfaced the
+same way, as the red delivery-failure line item).
+
 ## Outbound event reconciliation
 
 Kapso delivers `whatsapp.message.sent` and `whatsapp.message.failed` to the webhook for every
