@@ -568,4 +568,92 @@ class SendReplyTest extends TestCase
         $this->assertCount(1, $lineItems);
         $this->assertStringContainsString('worker process was killed', $lineItems->first()->body);
     }
+
+    /**
+     * The listener side of Task 5: core's `chat_conversation.send_reply`
+     * action (fired for every chat-type conversation instead of emailing,
+     * see app/Listeners/SendReplyToCustomer.php) must dispatch one
+     * SendReplyMessage job per published TYPE_MESSAGE reply thread, and
+     * skip anything else in the same batch (a TYPE_NOTE here). Bus::fake()
+     * observes dispatches without touching the real queue. Depending on two
+     * dispatches (not merely "at least one") is what would catch a
+     * registration bug that truncates the action to 1 arg instead of 3 --
+     * with $replies never arriving, the foreach below would have nothing to
+     * iterate and zero jobs would ever be dispatched.
+     */
+    public function test_the_hook_dispatches_one_job_per_published_reply()
+    {
+        \Bus::fake();
+
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $reply1       = $this->makeReplyThread($conversation);
+        $reply2       = $this->makeReplyThread($conversation);
+        $note         = $this->makeReplyThread($conversation, ['type' => Thread::TYPE_NOTE]);
+        $customer     = $conversation->customer;
+
+        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$reply1, $reply2, $note]), $customer);
+
+        // assertDispatchedTimes() itself is `protected` in this app's
+        // Laravel 5.5-era BusFake and cannot be called through the Facade;
+        // assertDispatched()'s numeric-$callback branch is the public path
+        // to the same assertion (see BusFake::assertDispatched()).
+        \Bus::assertDispatched(SendReplyMessage::class, 2);
+        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($reply1) {
+            return $job->threadId === $reply1->id;
+        });
+        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($reply2) {
+            return $job->threadId === $reply2->id;
+        });
+    }
+
+    /**
+     * The hook fires for every chat conversation, not only WhatsApp ones --
+     * core has no way to know which channel module owns a given chat
+     * conversation. This module's listener is the only thing narrowing that
+     * down, so a conversation on some other channel (module or otherwise)
+     * must be a silent no-op.
+     */
+    public function test_the_hook_ignores_conversations_of_other_channels()
+    {
+        \Bus::fake();
+
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $conversation->channel = 1;
+        $conversation->save();
+        $reply    = $this->makeReplyThread($conversation);
+        $customer = $conversation->customer;
+
+        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$reply]), $customer);
+
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+    }
+
+    /**
+     * The hook fires after Conversation::UNDO_TIMOUT with a $replies
+     * collection snapshotted at "send" time -- by the time it actually runs,
+     * the agent may have clicked undo, reverting the real DB row back to
+     * STATE_DRAFT. The listener must re-fetch by id and skip rather than
+     * trust the snapshot. A bare object carrying only ->id stands in for the
+     * stale snapshot here: the listener never reads anything else off it.
+     */
+    public function test_the_hook_skips_replies_that_were_undone()
+    {
+        \Bus::fake();
+
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $reply        = $this->makeReplyThread($conversation);
+        $customer     = $conversation->customer;
+
+        $undoneSnapshot = (object) ['id' => $reply->id];
+
+        $reply->state = Thread::STATE_DRAFT;
+        $reply->save();
+
+        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$undoneSnapshot]), $customer);
+
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+    }
 }

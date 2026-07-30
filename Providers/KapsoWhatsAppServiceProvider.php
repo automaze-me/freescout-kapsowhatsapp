@@ -44,6 +44,14 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             }
         });
 
+        // Chat-type conversations (WhatsApp among them) never get emailed a
+        // reply -- core fires this action instead, once per undo-window
+        // delay, for every chat conversation regardless of which channel
+        // module owns it (app/Listeners/SendReplyToCustomer.php). The
+        // listener itself is what filters down to only WhatsApp
+        // (KapsoAccount::CHANNEL) conversations and queues delivery.
+        \Eventy::addAction('chat_conversation.send_reply', [new \Modules\KapsoWhatsApp\Listeners\SendReplyToWhatsApp(), 'handle'], 20, 3);
+
         // Core already renders a name and download link for every
         // attachment (resources/views/conversations/partials/thread_attachments.blade.php);
         // this adds an inline thumbnail for images only. Other attachment
