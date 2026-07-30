@@ -11,6 +11,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\MessageBody;
 use Modules\KapsoWhatsApp\Services\PhoneNumber;
 use Modules\KapsoWhatsApp\Services\SystemUser;
@@ -299,7 +300,7 @@ class ReconcileOutboundMessage implements ShouldQueue
                     'contact_phone'         => $e164,
                 ]);
 
-                $this->createFailureLineItem($conversation, $summary);
+                DeliveryFailureLineItem::create($conversation, $summary);
 
                 // Deliberately not updated here, unlike recordForeignSend():
                 // last_reply_at / last_reply_from / the preview describe
@@ -357,38 +358,7 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
-        $this->createFailureLineItem($conversation, $summary);
-    }
-
-    /**
-     * Shared by both `recordFailure()` paths above: a `failed` event for an
-     * already-known row, and one that had to create the row itself because
-     * no `sent` had been processed yet.
-     */
-    protected function createFailureLineItem(Conversation $conversation, $summary)
-    {
-        $lineItem = new Thread();
-        $lineItem->conversation_id = $conversation->id;
-        $lineItem->user_id         = null;
-        $lineItem->type            = Thread::TYPE_LINEITEM;
-        $lineItem->status          = Thread::STATUS_NOCHANGE;
-        $lineItem->state           = Thread::STATE_PUBLISHED;
-        // action_type is deliberately left NULL: core's ACTION_TYPE_* set has
-        // no "WhatsApp delivery failed" member, and there is no core hook to
-        // register a new one. body still carries the fully-translated,
-        // escaped text, which is what actually needs to reach the page — see
-        // the LINEITEM_META_DELIVERY_FAILED meta flag below and
-        // KapsoWhatsAppServiceProvider's `thread.action_text` filter, which is
-        // what makes core render this body instead of an empty action-text
-        // bar (getActionText() has no fallback for a NULL action_type).
-        $lineItem->body            = __('WhatsApp delivery failed:').' '.e($summary);
-        // Core defines only PERSON_CUSTOMER and PERSON_USER — there is no
-        // PERSON_SYSTEM. A system-generated line item is attributed to the user side.
-        $lineItem->source_via      = Thread::PERSON_USER;
-        $lineItem->source_type     = Thread::SOURCE_TYPE_API;
-        $lineItem->customer_id     = $conversation->customer_id;
-        $lineItem->setMeta(KapsoMessage::LINEITEM_META_DELIVERY_FAILED, true);
-        $lineItem->save();
+        DeliveryFailureLineItem::create($conversation, $summary);
     }
 
     /**
