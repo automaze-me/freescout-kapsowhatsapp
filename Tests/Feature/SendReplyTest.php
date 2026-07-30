@@ -570,40 +570,75 @@ class SendReplyTest extends TestCase
     }
 
     /**
+     * Note on registration-arity safety (there is no dedicated test for
+     * this -- it cannot be exercised through Eventy::action() the way the
+     * provider registers it, so this is documentation, not a check):
+     * SendReplyToWhatsApp::handle($conversation, $replies, $customer) has
+     * three REQUIRED, default-less parameters. If the provider registration
+     * were ever accidentally reverted to pass only 1 arg, PHP raises an
+     * ArgumentCountError while binding the call -- BEFORE the method body
+     * (and so before this listener's own try/catch) ever runs -- and that
+     * error escapes straight into core's TriggerAction wrapper around
+     * \Helper::backgroundAction(). It is the missing-argument arity itself,
+     * not any foreach or dispatch-count reasoning inside handle(), that
+     * would surface such a mistake, and only for as long as all three
+     * parameters stay required: giving any of them a default would silently
+     * mask a wrong-arity registration instead of raising.
+     */
+
+    /**
      * The listener side of Task 5: core's `chat_conversation.send_reply`
      * action (fired for every chat-type conversation instead of emailing,
-     * see app/Listeners/SendReplyToCustomer.php) must dispatch one
-     * SendReplyMessage job per published TYPE_MESSAGE reply thread, and
-     * skip anything else in the same batch (a TYPE_NOTE here). Bus::fake()
-     * observes dispatches without touching the real queue. Depending on two
-     * dispatches (not merely "at least one") is what would catch a
-     * registration bug that truncates the action to 1 arg instead of 3 --
-     * with $replies never arriving, the foreach below would have nothing to
-     * iterate and zero jobs would ever be dispatched.
+     * see app/Listeners/SendReplyToCustomer.php) hands this hook the
+     * conversation's WHOLE published thread history, newest-first --
+     * SendReplyToCustomer.php:41 builds $replies from
+     * Conversation::getThreads() over every published TYPE_CUSTOMER /
+     * TYPE_MESSAGE / TYPE_LINEITEM thread, and the trim loop at :48-57 only
+     * removes threads NEWER than the triggering one, so first() is always
+     * the triggering reply and everything behind it is older, already-
+     * delivered history (core's own email job treats this identical
+     * collection the same way: SendReplyToCustomer.php:129 takes
+     * ->threads->first() as the message to send). This fixture is built the
+     * way core actually builds it -- triggering reply first, then an older
+     * customer message, then an OLDER published agent reply behind it (the
+     * replay hazard: iterating the whole collection would re-send that old
+     * agent reply to the customer on every new reply). Exactly one dispatch,
+     * for $newReply and nothing else, is what proves the listener never
+     * iterates.
      */
-    public function test_the_hook_dispatches_one_job_per_published_reply()
+    public function test_only_the_triggering_reply_is_dispatched_never_the_history()
     {
-        \Bus::fake();
-
         $account      = $this->makeAccount();
         $conversation = $this->makeConversation($account);
-        $reply1       = $this->makeReplyThread($conversation);
-        $reply2       = $this->makeReplyThread($conversation);
-        $note         = $this->makeReplyThread($conversation, ['type' => Thread::TYPE_NOTE]);
         $customer     = $conversation->customer;
 
-        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$reply1, $reply2, $note]), $customer);
+        // Built with a real (non-faked) Bus: a TYPE_CUSTOMER thread makes
+        // Conversation::refreshConversations() dispatch a queued broadcast
+        // event (ThreadObserver::created() -> Conversation.php:2272-2274),
+        // which errors under Bus::fake() in this app
+        // (BusFake::getCommandHandler() does not exist) -- unrelated to
+        // anything this test is about, so the fixtures are built before the
+        // fake, and only the dispatch under test runs with it active.
+        $olderAgentReply     = $this->makeReplyThread($conversation);
+        $olderCustomerThread = $this->makeReplyThread($conversation, ['type' => Thread::TYPE_CUSTOMER]);
+        $newReply            = $this->makeReplyThread($conversation);
+
+        \Bus::fake();
+
+        \Eventy::action(
+            'chat_conversation.send_reply',
+            $conversation,
+            collect([$newReply, $olderCustomerThread, $olderAgentReply]),
+            $customer
+        );
 
         // assertDispatchedTimes() itself is `protected` in this app's
         // Laravel 5.5-era BusFake and cannot be called through the Facade;
         // assertDispatched()'s numeric-$callback branch is the public path
         // to the same assertion (see BusFake::assertDispatched()).
-        \Bus::assertDispatched(SendReplyMessage::class, 2);
-        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($reply1) {
-            return $job->threadId === $reply1->id;
-        });
-        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($reply2) {
-            return $job->threadId === $reply2->id;
+        \Bus::assertDispatched(SendReplyMessage::class, 1);
+        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($newReply) {
+            return $job->threadId === $newReply->id;
         });
     }
 
@@ -635,8 +670,21 @@ class SendReplyTest extends TestCase
      * collection snapshotted at "send" time -- by the time it actually runs,
      * the agent may have clicked undo, reverting the real DB row back to
      * STATE_DRAFT. The listener must re-fetch by id and skip rather than
-     * trust the snapshot. A bare object carrying only ->id stands in for the
-     * stale snapshot here: the listener never reads anything else off it.
+     * trust the snapshot.
+     *
+     * The stale snapshot here is a real in-memory Thread model that still
+     * holds TYPE_MESSAGE + STATE_PUBLISHED in its own attributes (exactly
+     * what the object looked like at "send" time) while the underlying DB
+     * row is reverted out from under it via a direct query update, which
+     * does not touch this already-loaded instance. A bare
+     * (object) ['id' => $reply->id] would also pass against an
+     * implementation that -- wrongly -- trusted the snapshot's own type/
+     * state fields instead of re-fetching (both would read null and get
+     * skipped for the wrong reason), so it could not actually discriminate
+     * a snapshot-trusting implementation from a re-fetching one. This
+     * fixture can: it fails against a snapshot-trusting implementation
+     * (which would see TYPE_MESSAGE + STATE_PUBLISHED and dispatch) and
+     * only passes when the listener re-fetches by id.
      */
     public function test_the_hook_skips_replies_that_were_undone()
     {
@@ -647,12 +695,32 @@ class SendReplyTest extends TestCase
         $reply        = $this->makeReplyThread($conversation);
         $customer     = $conversation->customer;
 
-        $undoneSnapshot = (object) ['id' => $reply->id];
+        $staleSnapshot = Thread::find($reply->id);
 
-        $reply->state = Thread::STATE_DRAFT;
-        $reply->save();
+        Thread::where('id', $reply->id)->update(['state' => Thread::STATE_DRAFT]);
 
-        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$undoneSnapshot]), $customer);
+        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$staleSnapshot]), $customer);
+
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+    }
+
+    /**
+     * $replies is a raw argument on an Eventy action, not type-hinted --
+     * nothing stops a broken caller (or a future core refactor) from
+     * passing something that is not a Collection at all. The listener's
+     * try/catch must swallow that (an int has no ->first()) rather than let
+     * the error escape into core's TriggerAction wrapper around
+     * \Helper::backgroundAction(), which would break the whole queued job.
+     */
+    public function test_a_garbage_replies_argument_is_swallowed_and_logged()
+    {
+        \Bus::fake();
+
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $customer     = $conversation->customer;
+
+        \Eventy::action('chat_conversation.send_reply', $conversation, 5, $customer);
 
         \Bus::assertNotDispatched(SendReplyMessage::class);
     }
