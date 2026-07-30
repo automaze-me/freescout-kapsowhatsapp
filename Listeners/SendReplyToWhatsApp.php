@@ -34,14 +34,22 @@ use Modules\KapsoWhatsApp\Jobs\SendReplyMessage;
  *
  * $conversation, $replies and $customer are all serialized snapshots taken
  * at the moment the agent hit "send", not live models -- by the time this
- * runs (after the delay), the agent may since have clicked undo. The
- * TYPE_MESSAGE + STATE_PUBLISHED re-check below, against a freshly fetched
- * Thread, is a cheap, best-effort skip that exists purely to keep queue
- * noise down; it is NOT what correctness rests on. SendReplyMessage::guards()
- * performs the exact same re-check again, authoritatively, immediately
- * before it actually sends -- because more time (and so more chance of a
- * further undo) elapses between this listener running and that job
- * executing. Neither check replaces the other; both must stay.
+ * runs (after the delay), the agent may since have clicked undo, or the
+ * conversation may since have been merged into another one, reassigning
+ * this thread's conversation_id (see Conversation::mergeConversations(),
+ * app/Conversation.php:1378-1383). The TYPE_MESSAGE + STATE_PUBLISHED +
+ * channel re-check below, against a freshly fetched Thread and the
+ * conversation it *actually* belongs to right now, is a cheap, best-effort
+ * skip that exists purely to keep queue noise down; it is NOT what
+ * correctness rests on. It is deliberately a STRICT SUBSET of
+ * SendReplyMessage::guards() (Jobs/SendReplyMessage.php:134-196), which
+ * re-derives the identical thread -> conversation -> channel chain
+ * authoritatively, immediately before it actually sends -- because more
+ * time (and so more chance of a further undo or merge) elapses between this
+ * listener running and that job executing. This listener must never reject
+ * anything the job would still accept: when in doubt, dispatch and let
+ * guards() have the final word. Neither check replaces the other; both
+ * must stay.
  *
  * The try/catch below protects against a bad/foreign/undone reply at
  * runtime, NOT against a registration mistake: handle() keeps all three
@@ -65,7 +73,20 @@ class SendReplyToWhatsApp
             $first = $replies->first();
 
             if (!$first || empty($first->id)) {
-                \Log::info('[KapsoWhatsApp] SendReplyToWhatsApp: chat_conversation.send_reply fired with no deliverable reply', [
+                // App\Listeners\SendReplyToCustomer (core) is a plain,
+                // non-queued listener (no ShouldQueue) -- it builds $replies
+                // synchronously, in the same request that just created the
+                // triggering reply thread, and only afterwards hands the
+                // whole action off to \Helper::backgroundAction() for
+                // delayed execution. There is no queue hop, and so no race
+                // window, between "the reply thread exists" and "$replies is
+                // computed": an empty-or-id-less first() here is therefore
+                // structurally impossible from any of core's normal flows,
+                // not a legitimate race. If this branch ever fires, a reply
+                // was lost -- logged at error (the default log_level is
+                // `error`, which would otherwise discard an info-level line
+                // silently).
+                \Log::error('[KapsoWhatsApp] SendReplyToWhatsApp: chat_conversation.send_reply fired with no deliverable reply', [
                     'conversation_id' => $conversation->id,
                 ]);
 
@@ -73,16 +94,33 @@ class SendReplyToWhatsApp
             }
 
             // Re-fetch: $first is a serialized snapshot taken before the
-            // undo window closed, and may not even belong to this
-            // conversation. This check only keeps undone or foreign threads
-            // out of the queue -- SendReplyMessage::guards() is the
-            // authoritative gate (see class docblock above).
+            // undo window closed. This check only keeps undone or
+            // no-longer-a-message threads out of the queue --
+            // SendReplyMessage::guards() is the authoritative gate (see
+            // class docblock above).
             $fresh = Thread::find($first->id);
 
             if (!$fresh
-                || (int) $fresh->conversation_id !== (int) $conversation->id
                 || (int) $fresh->type !== Thread::TYPE_MESSAGE
                 || (int) $fresh->state !== Thread::STATE_PUBLISHED) {
+                return;
+            }
+
+            // Do NOT compare $fresh->conversation_id to the snapshot
+            // $conversation's id: Conversation::mergeConversations()
+            // (app/Conversation.php:1378-1383) reassigns a thread's
+            // conversation_id to the surviving conversation inside the very
+            // undo window this listener waits out, so a merge of one
+            // WhatsApp conversation into another leaves $conversation stale
+            // while $fresh->conversation_id is correct. Re-derive the
+            // channel from the thread's OWN, current conversation instead --
+            // exactly what SendReplyMessage::guards() does
+            // (Jobs/SendReplyMessage.php:150-156) -- so this guard can only
+            // ever be a subset of the job's: it never rejects a thread the
+            // job would still accept.
+            $freshConversation = Conversation::find($fresh->conversation_id);
+
+            if (!$freshConversation || (int) $freshConversation->channel !== KapsoAccount::CHANNEL) {
                 return;
             }
 

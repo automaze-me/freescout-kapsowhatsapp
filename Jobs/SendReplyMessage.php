@@ -20,12 +20,14 @@ use Modules\KapsoWhatsApp\Services\KapsoClient;
  * Delivers one published agent-reply thread to WhatsApp: chunks the body and
  * attaches each attachment as its own "part", claims each part with a
  * send-once DB row, POSTs it through Kapso's Meta proxy, and records the
- * wamid Kapso hands back. Runs after core's undo window
- * (Listeners\SendReplyToWhatsApp queues it with a delay), so it is handed a
- * thread **id**, not a model -- the thread must be re-fetched fresh, and may
- * by then have been undone (back to STATE_DRAFT) or otherwise no longer be
- * eligible to send. That is a legitimate race, not an error: guards() bails
- * silently (an info log, not a warning/error) whenever any of them fail.
+ * wamid Kapso hands back. Runs after core's undo window (core's own delay --
+ * \Helper::backgroundAction() schedules the whole action; Listeners\
+ * SendReplyToWhatsApp dispatches this job immediately, adding no delay of
+ * its own), so it is handed a thread **id**, not a model -- the thread must
+ * be re-fetched fresh, and may by then have been undone (back to
+ * STATE_DRAFT) or otherwise no longer be eligible to send. That is a
+ * legitimate race, not an error: guards() bails silently (an info log, not
+ * a warning/error) whenever any of them fail.
  *
  * Claim semantics (see claimAndSend()): each part is identified by a unique
  * (thread_id, part_key) row. A duplicate-key insert means either "already

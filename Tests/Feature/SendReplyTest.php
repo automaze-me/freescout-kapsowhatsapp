@@ -570,23 +570,6 @@ class SendReplyTest extends TestCase
     }
 
     /**
-     * Note on registration-arity safety (there is no dedicated test for
-     * this -- it cannot be exercised through Eventy::action() the way the
-     * provider registers it, so this is documentation, not a check):
-     * SendReplyToWhatsApp::handle($conversation, $replies, $customer) has
-     * three REQUIRED, default-less parameters. If the provider registration
-     * were ever accidentally reverted to pass only 1 arg, PHP raises an
-     * ArgumentCountError while binding the call -- BEFORE the method body
-     * (and so before this listener's own try/catch) ever runs -- and that
-     * error escapes straight into core's TriggerAction wrapper around
-     * \Helper::backgroundAction(). It is the missing-argument arity itself,
-     * not any foreach or dispatch-count reasoning inside handle(), that
-     * would surface such a mistake, and only for as long as all three
-     * parameters stay required: giving any of them a default would silently
-     * mask a wrong-arity registration instead of raising.
-     */
-
-    /**
      * The listener side of Task 5: core's `chat_conversation.send_reply`
      * action (fired for every chat-type conversation instead of emailing,
      * see app/Listeners/SendReplyToCustomer.php) hands this hook the
@@ -606,19 +589,31 @@ class SendReplyTest extends TestCase
      * for $newReply and nothing else, is what proves the listener never
      * iterates.
      */
+    // No dedicated test covers handle()'s 3-required-arg arity guarantee --
+    // it cannot be exercised through Eventy::action() the way the provider
+    // registers it, so that guarantee is documentation only; see the
+    // listener's own class docblock.
     public function test_only_the_triggering_reply_is_dispatched_never_the_history()
     {
         $account      = $this->makeAccount();
         $conversation = $this->makeConversation($account);
         $customer     = $conversation->customer;
 
-        // Built with a real (non-faked) Bus: a TYPE_CUSTOMER thread makes
-        // Conversation::refreshConversations() dispatch a queued broadcast
-        // event (ThreadObserver::created() -> Conversation.php:2272-2274),
-        // which errors under Bus::fake() in this app
+        // Built with a real (non-faked) Bus: this fixture includes a
+        // TYPE_CUSTOMER thread (olderCustomerThread below), and
+        // ThreadObserver::created()'s gating condition -- TYPE_CUSTOMER, or
+        // a draft TYPE_MESSAGE (app/Observers/ThreadObserver.php:97-100) --
+        // is what makes creating these particular fixtures dispatch a queued
+        // broadcast event via Conversation::refreshConversations()
+        // (app/Conversation.php:2274, its dispatchSelf() calls at
+        // :2276-2278). That dispatch errors under Bus::fake() in this app
         // (BusFake::getCommandHandler() does not exist) -- unrelated to
-        // anything this test is about, so the fixtures are built before the
-        // fake, and only the dispatch under test runs with it active.
+        // anything this test is about -- so the fixtures are built before
+        // the fake here, and only the dispatch under test runs with it
+        // active. The other tests in this class only ever create
+        // TYPE_MESSAGE threads in STATE_PUBLISHED (never TYPE_CUSTOMER or a
+        // draft), so they never trip that gate and safely call \Bus::fake()
+        // first -- do not "fix" them to match this one.
         $olderAgentReply     = $this->makeReplyThread($conversation);
         $olderCustomerThread = $this->makeReplyThread($conversation, ['type' => Thread::TYPE_CUSTOMER]);
         $newReply            = $this->makeReplyThread($conversation);
@@ -712,7 +707,16 @@ class SendReplyTest extends TestCase
      * the error escape into core's TriggerAction wrapper around
      * \Helper::backgroundAction(), which would break the whole queued job.
      */
-    public function test_a_garbage_replies_argument_is_swallowed_and_logged()
+    // Named for what this test actually asserts. \Log::spy() (which would
+    // let a real assertion cover the "and logged" half of the old name) is
+    // not usable here: in this PHP 8.2 environment it makes Mockery generate
+    // a mock class, which trips ReflectionParameter::isArray() being
+    // deprecated -- and this app escalates deprecations to a fatal
+    // ErrorException (the same escalation pattern documented in
+    // Jobs/SendReplyMessage.php's parts() docblock), breaking the test
+    // itself before the assertion under test ever runs. The listener's catch
+    // block calling \Log::error() directly is covered by inspection instead.
+    public function test_a_garbage_replies_argument_is_swallowed_without_dispatching()
     {
         \Bus::fake();
 
@@ -723,5 +727,48 @@ class SendReplyTest extends TestCase
         \Eventy::action('chat_conversation.send_reply', $conversation, 5, $customer);
 
         \Bus::assertNotDispatched(SendReplyMessage::class);
+    }
+
+    /**
+     * I1 fix: the ownership guard here must never be STRICTER than
+     * SendReplyMessage::guards() (Jobs/SendReplyMessage.php:150-156), which
+     * re-derives the conversation FROM THE THREAD, not from the (possibly
+     * stale) event snapshot. Conversation::mergeConversations()
+     * (app/Conversation.php:1378-1383) reassigns a thread's conversation_id
+     * to the surviving conversation; a merge of WhatsApp conversation B into
+     * WhatsApp conversation A landing inside the 15s undo window leaves this
+     * listener holding a stale $conversation = B snapshot while the thread
+     * itself now belongs to A. Comparing $fresh->conversation_id against
+     * that stale snapshot's id (the old implementation) would silently drop
+     * a reply the job's own guards would still happily send -- violating the
+     * "a reply must never silently die" constraint. This test builds exactly
+     * that scenario without calling mergeConversations() itself (its other
+     * side effects -- two extra LINEITEM threads, has_attachments syncing --
+     * would only add noise): a direct query update reassigns the thread's
+     * conversation_id, mirroring line 1380 of mergeConversations() alone.
+     */
+    public function test_a_reply_merged_into_another_whatsapp_conversation_is_still_dispatched()
+    {
+        \Bus::fake();
+
+        $account  = $this->makeAccount();
+        $convA    = $this->makeConversation($account);
+        $convB    = $this->makeConversation($account);
+        $customer = $convB->customer;
+
+        $reply = $this->makeReplyThread($convB);
+
+        // Simulate Conversation::mergeConversations() reassigning the
+        // thread's conversation_id (app/Conversation.php:1380) from B to A,
+        // landing inside the undo window: the event's $conversation argument
+        // below is still the stale B snapshot core captured before the
+        // merge, while the thread itself now belongs to A.
+        Thread::where('id', $reply->id)->update(['conversation_id' => $convA->id]);
+
+        \Eventy::action('chat_conversation.send_reply', $convB, collect([$reply]), $customer);
+
+        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($reply) {
+            return $job->threadId === $reply->id;
+        });
     }
 }
