@@ -31,7 +31,12 @@ class DeliveryFailureLineItem
         // KapsoWhatsAppServiceProvider's `thread.action_text` filter, which is
         // what makes core render this body instead of an empty action-text
         // bar (getActionText() has no fallback for a NULL action_type).
-        $lineItem->body            = __('WhatsApp delivery failed:').' '.e($summary);
+        // Wrapped in a `text-danger` span so the item actually renders red,
+        // not merely visible: thread.blade.php passes getActionText()'s
+        // return through core's safe_raw_html() (Helper::stripDangerousTags()),
+        // whose denylist is script/form/iframe/link/object/meta/embed/applet/
+        // style — `<span class="...">` is not on it and survives untouched.
+        $lineItem->body            = '<span class="text-danger">'.__('WhatsApp delivery failed:').' '.e($summary).'</span>';
         // Core defines only PERSON_CUSTOMER and PERSON_USER — there is no
         // PERSON_SYSTEM. A system-generated line item is attributed to the user side.
         $lineItem->source_via      = Thread::PERSON_USER;

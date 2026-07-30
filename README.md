@@ -66,7 +66,11 @@ own dashboard.
 Replying to a WhatsApp conversation delivers the reply to the customer via Kapso: a long reply is
 split into multiple WhatsApp messages automatically, and each attachment goes out as its own image
 or document message. Once Kapso confirms the send, the reply is marked *Sent via WhatsApp* on the
-conversation. Replying also marks the customer's own most recent message as read (the blue ticks).
+reply. Replying also marks the customer's own most recent message as read (the blue ticks).
+
+If the send itself is rejected at request time (Kapso's API declines it, rather than accepting it
+and reporting a failure later via webhook), the same red delivery-failure line item described below
+appears immediately — this is not only a webhook-driven outcome.
 
 ## Outbound event reconciliation
 

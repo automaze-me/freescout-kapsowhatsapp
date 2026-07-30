@@ -355,9 +355,16 @@ class ProcessInboundMessage implements ShouldQueue
 
         // preg_replace() with the `u` modifier returns null (not the
         // original string) when its subject isn't valid UTF-8, which would
-        // otherwise blank the thread body on save. Not reachable today —
-        // $thread->body is always our own escaped HTML — but guard it rather
-        // than trust that stays true forever.
+        // otherwise blank the thread body on save. $thread->body here is not
+        // always our own escaped HTML any more: since Task 4,
+        // SendReplyMessage::claimAndSend() also sets `thread_id` (and later
+        // `wamid`) on rows pointing at agent-composed reply threads, so a
+        // reaction to an agent's WhatsApp reply resolves here, via
+        // threadForWamid(), to real WYSIWYG editor HTML. Still safe: this
+        // guard's original-body fallback, plus the e() on the emoji below,
+        // hold regardless of which kind of thread this is -- but the safety
+        // no longer rests on "the body is always our own escaped HTML", it
+        // rests on these guards. See the Task 6 review for the full trace.
         $stripped = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
         $stripped = $stripped === null ? $thread->body : $stripped;
 

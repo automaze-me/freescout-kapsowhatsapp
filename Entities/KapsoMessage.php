@@ -22,13 +22,22 @@ class KapsoMessage extends Model
 
     /**
      * Thread::meta key set on the reply thread SendReplyMessage created, once
-     * ReconcileOutboundMessage sees the matching `whatsapp.message.sent`
-     * webhook for that thread's own accepted send. Presence alone renders the
-     * "Sent via WhatsApp" marker -- see KapsoWhatsAppServiceProvider's
-     * `thread.meta` action -- the ISO-8601 timestamp value itself is not
-     * rendered, kept only for debugging. Never set on a row that is, or later
-     * becomes, `failed`: see ReconcileOutboundMessage's own docblock for why
-     * a `sent` event can never win against a `failed` one.
+     * ReconcileOutboundMessage sees a matching `whatsapp.message.sent`
+     * webhook. Presence alone renders the "Sent via WhatsApp" marker -- see
+     * KapsoWhatsAppServiceProvider's `thread.meta` action -- the ISO-8601
+     * timestamp value itself is not rendered, kept only for debugging.
+     *
+     * The true invariant: present if and only if every part of the reply
+     * Kapso has reported on so far succeeded, and none failed. A failure
+     * recorded for the thread -- any of its rows going `status = 'failed'`
+     * or `send_state = SEND_STATE_FAILED` -- clears this meta
+     * (ReconcileOutboundMessage::applyFailureToRow()) and blocks any future
+     * stamp for as long as that failure stands: the marker's meaning is
+     * "this reply is delivered-and-healthy", not merely "Kapso accepted this
+     * part", so it must never coexist with a recorded failure for the same
+     * reply. It can be (re-)stamped only by
+     * ReconcileOutboundMessage::markOwnSendSent(), and only while the thread
+     * has no failed part at the moment it runs.
      */
     const THREAD_META_SENT_AT = 'kapsowhatsapp_sent_at';
 

@@ -2,6 +2,7 @@
 
 namespace Modules\KapsoWhatsApp\Tests\Feature;
 
+use App\Attachment;
 use App\Conversation;
 use App\Customer;
 use App\Folder;
@@ -273,7 +274,7 @@ class SentMarkerTest extends TestCase
             'a failed send must never carry the sent-marker meta');
 
         $html = $this->renderThreadMeta($thread, $conversation);
-        $this->assertSame('', $html, 'a failed send must never render the sent marker');
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html, 'a failed send must never render the sent marker');
 
         // The existing failure-line-item behaviour (DeliveryFailureLineItem)
         // must still fire and still render its text via getActionText(),
@@ -307,6 +308,147 @@ class SentMarkerTest extends TestCase
             'a late sent event for an already-failed row must never add the sent-marker meta');
 
         $html = $this->renderThreadMeta($thread, $conversation);
-        $this->assertSame('', $html, 'a late sent event for an already-failed row must never render the sent marker');
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html, 'a late sent event for an already-failed row must never render the sent marker');
+    }
+
+    /**
+     * Reviewer I1(a): WhatsApp's common failure order is accepted-then-failed
+     * (e.g. a 131026-style error arriving after Kapso already accepted the
+     * send). Before this fix, applyFailureToRow() flipped status to `failed`
+     * and posted the line item but left the marker meta standing -- an agent
+     * would see both the checkmark and a red failure item with no way to
+     * tell what the customer actually got. The marker's meaning is upgraded
+     * here from "Kapso accepted this part" to "this reply is
+     * delivered-and-healthy": a recorded failure clears it and blocks future
+     * stamps.
+     */
+    public function test_a_failure_after_the_marker_clears_the_marker()
+    {
+        $scenario = $this->scenario();
+        [$account, $conversation, , $thread] = $scenario;
+
+        $this->sendAccepted($scenario, 'wamid.OUT7');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.OUT7')))->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNotNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'precondition: the sent webhook must stamp the marker before the failure arrives');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringContainsString('Sent via WhatsApp', $html);
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.failed', $this->failedPayload('wamid.OUT7')))->handle();
+
+        $row = KapsoMessage::where('wamid', 'wamid.OUT7')->firstOrFail();
+        $this->assertSame('failed', $row->status);
+
+        $thread = $thread->fresh();
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a failure recorded after the marker was stamped must clear it');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html);
+
+        $lineItem = Thread::where('conversation_id', $conversation->id)
+            ->where('type', Thread::TYPE_LINEITEM)->orderBy('id', 'desc')->first();
+        $this->assertNotNull($lineItem, 'the failure must still be visible on the conversation');
+
+        // The failure-first hardening must keep winning: a redelivery of the
+        // sent webhook must not resurrect the marker the failure just
+        // cleared.
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.OUT7')))->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a redelivered sent event must not resurrect a marker a failure already cleared');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html);
+    }
+
+    /**
+     * Reviewer I1(b): a two-part reply (text body + image attachment) where
+     * the attachment fails on the job's final attempt --
+     * finalizeFailure() marks that part SEND_STATE_FAILED with status left
+     * NULL (it writes only send_state + error), mirroring
+     * SendReplyTest::test_a_partial_retry_resends_only_the_unaccepted_part()'s
+     * fixture -- while the body part is already accepted. The body part's own
+     * `sent` webhook must still flip its own row's status, but must never
+     * stamp the marker for a reply that is only partially delivered.
+     */
+    public function test_a_partially_failed_reply_never_gets_the_marker()
+    {
+        $scenario = $this->scenario();
+        [$account, $conversation, , $thread] = $scenario;
+
+        $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.PART-TEXT']]])),
+            new Response(500, [], json_encode(['error' => 'image relay error'])),
+        ]);
+
+        $job = new SendReplyMessage($thread->id);
+        $job->tries = 1;
+        $job->handle();
+
+        $bodyRow = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $attRow  = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))->firstOrFail();
+
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $bodyRow->send_state);
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $attRow->send_state);
+        $this->assertNull($attRow->status, "finalizeFailure() writes only send_state + error, never status");
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.PART-TEXT')))->handle();
+
+        $bodyRow = $bodyRow->fresh();
+        $this->assertSame('sent', $bodyRow->status, "the body part's own status must still flip on its sent webhook");
+
+        $thread = $thread->fresh();
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a reply with a failed sibling part must never get the sent marker');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html);
+    }
+
+    /**
+     * Reviewer M1 (crash window): the atomic status claim in
+     * markOwnSendSent() can commit while the worker dies before the meta
+     * stamp that follows it, permanently losing the marker for a send that
+     * actually succeeded and never failed -- because the duplicate webhook
+     * Kapso redelivers later then fails the old `whereNull('status')` claim
+     * this method used to gate the stamp on. Rather than literally
+     * interrupting the job mid-method, this cheaply reproduces the same end
+     * state (status already flipped, meta missing) by deleting the meta a
+     * normal run just stamped, then redelivers the identical `sent` webhook.
+     */
+    public function test_a_duplicate_sent_webhook_restamps_a_marker_lost_to_a_crash()
+    {
+        $scenario = $this->scenario();
+        [$account, $conversation, , $thread] = $scenario;
+
+        $this->sendAccepted($scenario, 'wamid.OUT7');
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.OUT7')))->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNotNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'precondition: the first delivery must stamp the marker');
+
+        // Simulate the crash window: the status claim already committed (it
+        // won't claim again on the redelivery below), but the stamp itself
+        // was lost.
+        $thread->setMeta(KapsoMessage::THREAD_META_SENT_AT, null);
+        $thread->save();
+        $this->assertNull($thread->fresh()->getMeta(KapsoMessage::THREAD_META_SENT_AT));
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.OUT7')))->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNotNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a duplicate sent delivery for an unfailed row must restamp a marker lost to a crash');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringContainsString('Sent via WhatsApp', $html);
     }
 }

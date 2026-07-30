@@ -157,14 +157,27 @@ class ReconcileOutboundMessage implements ShouldQueue
                 // Always our own escaped text, never a copy of an
                 // agent-composed body: this method creates a brand-new
                 // Thread for every foreign send and never attaches a wamid
-                // to a pre-existing one. That is what keeps
-                // ProcessInboundMessage::applyReaction()'s preg_replace()
-                // safe once outbound rows exist — every thread it can ever
-                // resolve via KapsoMessage::threadForWamid() was created
-                // here or by ProcessInboundMessage itself, both always with
-                // escaped HTML, never the rich WYSIWYG output of FreeScout's
-                // own reply editor. See the Task 9 report for the full
-                // trace of why no other path can set a wamid's `thread_id`.
+                // to a pre-existing one -- so THIS thread, specifically, is
+                // always safe for ProcessInboundMessage::applyReaction()'s
+                // preg_replace() to run over.
+                //
+                // That said, this is no longer the only path that can set a
+                // wamid's `thread_id` -- since Task 4,
+                // SendReplyMessage::claimAndSend() also sets `thread_id` (and
+                // later `wamid`) on rows that point at agent-composed reply
+                // threads, real WYSIWYG HTML from FreeScout's own editor, not
+                // escaped text like this thread's. A customer reacting to an
+                // agent's WhatsApp reply therefore resolves, via
+                // KapsoMessage::threadForWamid(), to that reply thread, and
+                // applyReaction() runs its preg_replace()/append over editor
+                // HTML. That is still safe -- the `u`-modifier's null-return
+                // is guarded there (falls back to the original body instead
+                // of blanking it), the reaction emoji is escaped via e()
+                // before being appended, and appending the reaction paragraph
+                // to our own reply's body is the desired behaviour, not a
+                // bug -- but the safety no longer rests on "no other path can
+                // set a wamid's thread_id"; it rests on applyReaction()'s own
+                // guards. See the Task 6 review for the full trace.
                 $thread->body            = nl2br(e($body))
                     .'<p><em>'.__('Sent outside FreeScout').'</em></p>';
                 $thread->source_via      = Thread::PERSON_USER;
@@ -221,17 +234,40 @@ class ReconcileOutboundMessage implements ShouldQueue
      * `send_state` set by SendReplyMessage's claimAndSend() -- and is not
      * already `failed`; any other known row (a foreign send already
      * reconciled, a duplicate delivery of this same event, ...) is left
-     * untouched. Claims the status flip with an atomic
-     * `UPDATE ... WHERE status IS NULL`, mirroring applyFailureToRow()'s own
-     * claim below: the row starts with `status` NULL (SendReplyMessage never
-     * writes that column, only `send_state`), so this is what stops a
-     * concurrent/duplicate delivery of the same `sent` event from marking the
-     * thread twice, and -- critically -- what stops this from ever winning a
-     * race against a `failed` event for the same wamid that commits its own
-     * status write first: if that happens, `status` is no longer NULL by the
-     * time this UPDATE runs, `$claimed` is 0, and this method does nothing.
-     * That is the same "failed-first hardening must keep winning" guarantee
-     * `recordFailure()`'s docblock describes, applied to this side of it.
+     * untouched.
+     *
+     * The marker's meaning (THREAD_META_SENT_AT, see its docblock) is "this
+     * reply is delivered-and-healthy", not merely "Kapso accepted this
+     * part" -- so stamping it takes two independent checks, run in this
+     * order:
+     *
+     * 1. The atomic `UPDATE ... WHERE status IS NULL` status claim. Its
+     *    *form* is unchanged from before, but its *result* no longer gates
+     *    the stamp below -- it exists only to keep the status write itself
+     *    idempotent/atomic (the row starts with `status` NULL, since
+     *    SendReplyMessage never writes that column). Gating the stamp on
+     *    `$claimed` used to mean a crash between this claim committing and
+     *    the stamp below (reviewer M1) lost the marker forever: the
+     *    duplicate `sent` delivery Kapso eventually redelivers would find
+     *    `status` already `sent`, fail this same claim, and give up without
+     *    ever stamping. Un-gating it is what lets that redelivery finish the
+     *    job the crashed run didn't.
+     * 2. The sibling-failure gate just below: skip the stamp when *any* row
+     *    sharing this `thread_id` -- any part of the same multi-part reply,
+     *    including this row itself -- is `failed`. This is what stops a
+     *    partially-failed reply from ever showing the marker (one part
+     *    accepted does not mean the reply as a whole is healthy), and, for
+     *    this row's own failures, it is also what stops a redelivered
+     *    `sent` from resurrecting a marker applyFailureToRow() already
+     *    cleared: once *this* row is failed, the guard above already bails
+     *    (`$known->status === 'failed'`) before reaching here, but a
+     *    *sibling* part failing does not touch this row's own `status` --
+     *    it stays `sent` -- so without this gate the trio above would let a
+     *    redelivery straight through.
+     *
+     * Neither check alone is a race guard by itself any more; together they
+     * are what keeps "failed always wins" true no matter which of `sent` /
+     * `failed`, for which part, commits first or gets redelivered.
      */
     protected function markOwnSendSent(KapsoMessage $known)
     {
@@ -239,11 +275,20 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
-        $claimed = KapsoMessage::where('id', $known->id)
+        // Idempotent/atomic status write only -- see the docblock above for
+        // why its result must not gate the stamp below.
+        KapsoMessage::where('id', $known->id)
             ->whereNull('status')
             ->update(['status' => 'sent']);
 
-        if (!$claimed) {
+        $hasFailedSibling = KapsoMessage::where('thread_id', $known->thread_id)
+            ->where(function ($query) {
+                $query->where('send_state', KapsoMessage::SEND_STATE_FAILED)
+                    ->orWhere('status', 'failed');
+            })
+            ->exists();
+
+        if ($hasFailedSibling) {
             return;
         }
 
@@ -347,6 +392,12 @@ class ReconcileOutboundMessage implements ShouldQueue
                     'contact_phone'         => $e164,
                 ]);
 
+                // No marker to clear on this path: `thread_id` here points at
+                // the thread just created above, in this same transaction --
+                // brand new, so it cannot already carry THREAD_META_SENT_AT
+                // (only markOwnSendSent() ever stamps it, and only for a row
+                // that already reached the `accepted` send state, which
+                // nothing on this path ever does before landing here failed).
                 DeliveryFailureLineItem::create($conversation, $summary);
 
                 // Deliberately not updated here, unlike recordForeignSend():
@@ -382,6 +433,14 @@ class ReconcileOutboundMessage implements ShouldQueue
      * serialises concurrent attempts and always evaluates the WHERE clause
      * against the latest committed data, so this is safe even when two
      * workers race here at the same instant.
+     *
+     * Also clears the "Sent via WhatsApp" marker on this row's reply thread,
+     * if any (reviewer I1(a)): WhatsApp's common failure order is
+     * accepted-then-failed, so markOwnSendSent() may already have stamped
+     * THREAD_META_SENT_AT for this exact row before this later failure
+     * arrived. The marker must never coexist with a recorded failure for
+     * the same reply -- see THREAD_META_SENT_AT's own docblock for the
+     * invariant this maintains.
      */
     protected function applyFailureToRow(KapsoMessage $known, $summary)
     {
@@ -393,6 +452,22 @@ class ReconcileOutboundMessage implements ShouldQueue
 
         if (!$claimed) {
             return;
+        }
+
+        if ($known->thread_id) {
+            // Thread has no removeMeta(); Thread::getMeta() reads the meta
+            // array with isset(), so writing the value as null makes it read
+            // back exactly as absent -- the same effect as removing the key.
+            // Safe to run even when no marker was ever stamped for this
+            // thread (e.g. this row's own send never reached `accepted`
+            // before failing): setMeta()+save() then just writes the same
+            // already-absent value back.
+            $thread = Thread::find($known->thread_id);
+
+            if ($thread) {
+                $thread->setMeta(KapsoMessage::THREAD_META_SENT_AT, null);
+                $thread->save();
+            }
         }
 
         if (!$known->conversation_id) {

@@ -80,26 +80,39 @@ class ReconcileOutboundTest extends TestCase
         return $payload;
     }
 
-    public function test_our_own_send_is_ignored()
+    /**
+     * This fixture's row -- `thread_id` NULL, no `send_state` -- is not "our
+     * own send": that requires `thread_id` + `send_state = accepted`,
+     * written only by SendReplyMessage::claimAndSend(). It is what an
+     * already-reconciled FOREIGN row looks like instead (recordForeignSend()
+     * never sets `send_state`). Our own sends are no longer ignored --
+     * SentMarkerTest pins the marker they actually get -- this test instead
+     * proves markOwnSendSent()'s first guard (`!$known->thread_id`) is a
+     * safe, idempotent no-op for a `sent` event on a known row it does not
+     * recognise as its own, exactly the same as it always was for a
+     * duplicate delivery of an already-reconciled event.
+     */
+    public function test_a_sent_event_for_an_already_reconciled_foreign_row_is_idempotent()
     {
         $account = $this->makeAccount();
         $this->seedInbound($account);
 
         $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
 
-        // Simulate a send this module already recorded.
+        // Simulate a foreign send already reconciled some other way (not
+        // "our own send" -- see the docblock above).
         KapsoMessage::create([
             'account_id'      => $account->id,
             'conversation_id' => $conversationId,
             'thread_id'       => null,
-            'wamid'           => 'wamid.ours',
+            'wamid'           => 'wamid.reconciled',
             'direction'       => KapsoMessage::DIRECTION_OUTBOUND,
             'contact_phone'   => '+4915166666666',
         ]);
 
         $threadsBefore = Thread::where('conversation_id', $conversationId)->count();
 
-        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.ours')))->handle();
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.reconciled')))->handle();
 
         $this->assertSame($threadsBefore, Thread::where('conversation_id', $conversationId)->count(),
             'a send we already know about must not produce a second thread');
@@ -178,6 +191,19 @@ class ReconcileOutboundTest extends TestCase
             'the failure line item must render visible text via getActionText(), not a blank bar');
         $this->assertStringContainsString('131047', $rendered);
         $this->assertStringContainsString(__('WhatsApp delivery failed:'), $rendered);
+
+        // Reviewer M2: the line item must actually render red, not just be
+        // visible. thread.blade.php's real call site is
+        // `safe_raw_html($thread->getActionText(...))` -- pass the same
+        // output through core's actual sanitizer
+        // (Helper::stripDangerousTags(), whose denylist is
+        // script/form/iframe/link/object/meta/embed/applet/style) and prove
+        // the `text-danger` span survives it untouched, rather than trusting
+        // that getActionText() alone is what the page shows.
+        $sanitized = safe_raw_html($rendered);
+        $this->assertStringContainsString('<span class="text-danger">', $sanitized,
+            'the text-danger wrapper must survive core\'s safe_raw_html() sanitizer for the failure item to render red');
+        $this->assertStringContainsString('131047', $sanitized);
     }
 
     public function test_a_send_for_an_unknown_conversation_is_dropped_quietly()
