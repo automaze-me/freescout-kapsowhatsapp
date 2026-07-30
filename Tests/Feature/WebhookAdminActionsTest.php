@@ -210,12 +210,25 @@ class WebhookAdminActionsTest extends TestCase
             ->assertStatus(302)
             ->assertSessionHas('flash_error_floating');
 
+        $account       = $account->fresh();
+        $attemptedAt   = $account->webhook_check_attempted_at->timestamp;
+        $recordedError = $account->webhook_error;
+
         // Nothing queued: any outbound call here would fail the test with an
-        // "empty mock queue" error rather than silently passing.
+        // "empty mock queue" error rather than silently passing. (Belt and
+        // braces only -- see the state assertions below for why an empty
+        // queue alone cannot prove this; an attempted-but-throttled-away
+        // call and no call at all both leave $this->history empty, since
+        // an empty MockHandler's exception is rewrapped into a
+        // KapsoApiException before Guzzle's history middleware ever sees
+        // it.)
         $this->fakeResponses([]);
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
 
+        $account = $account->fresh();
+        $this->assertSame($attemptedAt, $account->webhook_check_attempted_at->timestamp, 'a call inside the throttle window must not restamp the attempt time');
+        $this->assertSame($recordedError, $account->webhook_error, 'a call inside the throttle window must not overwrite the recorded error');
         $this->assertCount(0, $this->history, 'a check attempted moments ago -- even a failed one -- must not be retried immediately');
     }
 
@@ -318,9 +331,19 @@ class WebhookAdminActionsTest extends TestCase
         $account->webhook_checked_at         = now();
         $account->webhook_check_attempted_at = now();
         $account->save();
+        $stampedAt = $account->webhook_check_attempted_at->timestamp;
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
 
+        // See the class-level note near the throttle-window tests: an empty
+        // queue alone cannot prove no call was attempted, since an
+        // attempted-but-gated call and no call both leave $this->history
+        // empty. attempted_at/webhook_error staying exactly as stamped above
+        // is the actual proof.
+        $account = $account->fresh();
+        $this->assertSame($stampedAt, $account->webhook_check_attempted_at->timestamp, 'a call inside the throttle window must not restamp the attempt time');
+        $this->assertNull($account->webhook_error, 'no call means no error to record');
+        $this->assertTrue($account->webhook_active, 'a call inside the throttle window must not overwrite the known-active status');
         $this->assertCount(0, $this->history);
     }
 
@@ -396,6 +419,7 @@ class WebhookAdminActionsTest extends TestCase
         $account                             = $this->makeAccount();
         $account->webhook_check_attempted_at = now();
         $account->save();
+        $stampedAt = $account->webhook_check_attempted_at->timestamp;
 
         $html = $this->actingAs($this->adminUser())
             ->get(route('kapsowhatsapp.settings'))
@@ -405,6 +429,12 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertStringNotContainsString(route('kapsowhatsapp.webhook.register', ['id' => $account->id]), $html);
         $this->assertStringContainsString('Not registered', $html);
         $this->assertStringNotContainsString('curl', strtolower($html));
+
+        // See the class-level note near the throttle-window tests: an empty
+        // queue alone cannot prove no call was attempted.
+        $account = $account->fresh();
+        $this->assertSame($stampedAt, $account->webhook_check_attempted_at->timestamp, 'a call inside the throttle window must not restamp the attempt time');
+        $this->assertNull($account->webhook_error, 'no call means no error to record');
         $this->assertCount(0, $this->history);
     }
 
@@ -433,6 +463,24 @@ class WebhookAdminActionsTest extends TestCase
         $this->assertCount(2, $this->history, 'exactly one list and one create');
     }
 
+    /**
+     * An empty MockHandler queue throws \OutOfBoundsException the instant a
+     * call is attempted -- but platformRequest() catches \Exception (which
+     * OutOfBoundsException is) and rewraps it as a KapsoApiException before
+     * it ever reaches Guzzle's history middleware, so a call that is
+     * attempted-but-should-not-have-been and a call that never happens both
+     * leave $this->history empty. assertCount(0, $this->history) alone
+     * therefore cannot tell a held throttle gate from a broken one that
+     * merely failed against an empty queue -- it only proves "no call
+     * completed", not "no call was attempted". A KapsoApiException raised
+     * this way *does* still run through reconcileWebhook()'s normal
+     * KapsoApiException branch, though, which calls recordWebhookError() and
+     * so stamps webhook_check_attempted_at and sets webhook_error -- so
+     * those two fields staying exactly as they were is what actually proves
+     * the gate held. Kept the empty-queue assertCount too, as a
+     * belt-and-braces explosion for anything that manages to make a call
+     * outside this specific swallow path.
+     */
     public function test_settings_load_does_not_re_register_within_the_throttle_window()
     {
         $this->fakeResponses([]);
@@ -440,13 +488,25 @@ class WebhookAdminActionsTest extends TestCase
         $account                             = $this->makeAccount();
         $account->webhook_check_attempted_at = now();
         $account->save();
+        $stampedAt = $account->webhook_check_attempted_at->timestamp;
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
 
-        $this->assertNull($account->fresh()->webhook_id);
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertSame($stampedAt, $account->webhook_check_attempted_at->timestamp, 'a call inside the throttle window must not restamp the attempt time');
+        $this->assertNull($account->webhook_error, 'no call means no error to record');
         $this->assertCount(0, $this->history);
     }
 
+    /**
+     * See the docblock above test_settings_load_does_not_re_register_within_the_throttle_window()
+     * for why assertCount(0, $this->history) alone cannot prove this gate
+     * held: the state assertions below (attempted_at and webhook_error both
+     * still exactly as makeAccount() left them, i.e. both still null) are
+     * what actually distinguish "never attempted" from "attempted, and the
+     * empty queue's resulting KapsoApiException got recorded".
+     */
     public function test_settings_load_never_auto_registers_an_inactive_account()
     {
         $this->fakeResponses([]);
@@ -457,7 +517,10 @@ class WebhookAdminActionsTest extends TestCase
 
         $this->actingAs($this->adminUser())->get(route('kapsowhatsapp.settings'))->assertStatus(200);
 
-        $this->assertNull($account->fresh()->webhook_id);
+        $account = $account->fresh();
+        $this->assertNull($account->webhook_id);
+        $this->assertNull($account->webhook_check_attempted_at, 'no call means no attempt to stamp');
+        $this->assertNull($account->webhook_error, 'no call means no error to record');
         $this->assertCount(0, $this->history);
     }
 

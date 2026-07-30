@@ -100,14 +100,15 @@ class KapsoWhatsAppController extends Controller
      *
      * An unregistered account is only ever registered here when it is
      * active -- an inactive account is never auto-registered by this
-     * ambient, page-load-triggered loop. store()'s own registration on
-     * create is deliberately not gated the same way -- creating an account
-     * (like the old manual "Register with Kapso" click it replaces, which
-     * never checked is_active either) is itself the explicit, one-time,
-     * per-account act; this loop is not. A registered account is refreshed
-     * here regardless of is_active: turning an account off does not touch
-     * its webhook in Kapso (see the README), so its status can still change
-     * and is still worth showing accurately.
+     * ambient, page-load-triggered loop, the same rule store() now applies
+     * on create (see its is_active gate). An account created inactive gets
+     * no webhook and no webhook_check_attempted_at stamp at all, so it
+     * arrives here looking exactly like any other stale, unregistered,
+     * now-active account the instant it is activated via update() -- this
+     * loop is what actually registers it, not update() itself. A registered
+     * account is refreshed here regardless of is_active: turning an account
+     * off does not touch its webhook in Kapso (see the README), so its
+     * status can still change and is still worth showing accurately.
      *
      * Either branch only runs when the last *attempt* has gone stale, so
      * this is at most one round trip per account per few minutes --
@@ -225,20 +226,43 @@ class KapsoWhatsAppController extends Controller
 
         $account->save();
 
-        $this->registerNewAccountWebhook($account);
+        // Registering is gated on is_active, not unconditional: Kapso will
+        // happily create a webhook for a number attached to an inactive
+        // account, but KapsoAccount::findByPhoneNumberId() only matches
+        // active accounts, so KapsoSignature would then 403 every single
+        // delivery to it -- and ~15 minutes of 403s is exactly what makes
+        // Kapso auto-pause a webhook on its own. Worse, that does not
+        // self-heal when the admin later flips the account active:
+        // isWebhookRegistered() would already be true, so reconcileWebhook()
+        // would take the refresh() branch and just keep reporting "Paused by
+        // Kapso" -- the manual Re-enable click this whole feature exists to
+        // remove. Leaving webhook_check_attempted_at null on the inactive
+        // branch (it already is, on a freshly created account) is what makes
+        // this self-heal instead: the moment the account is activated via
+        // update(), the very next settings-page load finds it unregistered
+        // and stale and registers it for real. Do not "simplify" this gate
+        // away -- see WebhookAdminActionsTest/AdminAccountsTest for the
+        // regression it protects against.
+        if ($account->is_active) {
+            $this->registerNewAccountWebhook($account);
+        } else {
+            \Session::flash('flash_success_floating', __('Account saved'));
+        }
 
         return redirect()->route('kapsowhatsapp.settings');
     }
 
     /**
      * The manual "Register with Kapso" step is gone: creation registers the
-     * webhook itself, right after the account row is saved. The account
-     * stays saved either way -- a Kapso outage at this exact moment must not
-     * roll back or lose data an admin already successfully entered, and the
-     * settings-page loop (reconcileWebhook()) will keep retrying on its own.
-     * Same try/catch discipline as reconcileWebhook(): a KapsoApiException
-     * records the reason on the row via recordWebhookError() (which also
-     * stamps webhook_check_attempted_at, so this attempt counts against the
+     * webhook itself, right after the account row is saved, when the account
+     * was created active (see store()'s is_active gate above -- this is
+     * never called for an inactive create). The account stays saved either
+     * way -- a Kapso outage at this exact moment must not roll back or lose
+     * data an admin already successfully entered, and the settings-page loop
+     * (reconcileWebhook()) will keep retrying on its own. Same try/catch
+     * discipline as reconcileWebhook(): a KapsoApiException records the
+     * reason on the row via recordWebhookError() (which also stamps
+     * webhook_check_attempted_at, so this attempt counts against the
      * throttle immediately -- no double call from the settings page a moment
      * later); any other \Throwable only logs, so a PHP \Error here cannot
      * 500 the response to a create that otherwise succeeded.
