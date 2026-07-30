@@ -68,7 +68,7 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
                 .'</a></div>';
         }, 20, 4);
 
-        // ReconcileOutboundMessage::createFailureLineItem() posts a
+        // Services\DeliveryFailureLineItem::create() posts a
         // TYPE_LINEITEM thread for a WhatsApp delivery failure with
         // action_type left NULL (core has no ACTION_TYPE_* for this and no
         // hook to register one). Thread::getActionText() has no fallback
@@ -90,5 +90,17 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
 
             return $didThis;
         }, 20, 5);
+
+        // ReconcileOutboundMessage::markOwnSendSent() sets this meta on a
+        // reply thread once Kapso's `whatsapp.message.sent` webhook confirms
+        // our own accepted send actually went out. Core fires this action as
+        // @action('thread.meta', $thread, $loop, $threads, $conversation,
+        // $mailbox) (resources/views/conversations/partials/thread.blade.php)
+        // -- five args, of which only $thread is needed here.
+        \Eventy::addAction('thread.meta', function ($thread) {
+            if ($thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_SENT_AT)) {
+                echo '<div class="thread-meta"><i class="glyphicon glyphicon-ok"></i> '.e(__('Sent via WhatsApp')).'</div>';
+            }
+        }, 20, 1);
     }
 }

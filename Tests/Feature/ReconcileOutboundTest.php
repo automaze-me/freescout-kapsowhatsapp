@@ -130,6 +130,12 @@ class ReconcileOutboundTest extends TestCase
         $this->assertNotNull($thread->created_by_user_id,
             'a module-created thread with no created_by_user_id makes core\'s print view fatal');
         $this->assertNotNull($thread->created_by_user_cached);
+
+        // A foreign send is never our own accepted send -- it must never
+        // carry the "Sent via WhatsApp" marker meta (SentMarkerTest pins the
+        // marker's actual appearance for the case this guards against).
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a foreign send must never get the sent-marker meta');
     }
 
     public function test_a_failed_send_is_surfaced_on_the_conversation()
@@ -295,8 +301,8 @@ class ReconcileOutboundTest extends TestCase
 
         // Same rendering guarantee as the "already known row" path above,
         // exercised here via the other call site (recordFailureForUnknownSend
-        // -> createFailureLineItem): the body containing the text is not
-        // enough, core only ever renders getActionText().
+        // -> DeliveryFailureLineItem::create): the body containing the text
+        // is not enough, core only ever renders getActionText().
         $rendered = $lineItem->getActionText('', true, false, null, 'Some Agent');
         $this->assertNotSame('', trim(strip_tags($rendered)),
             'the failure line item must render visible text via getActionText(), not a blank bar');

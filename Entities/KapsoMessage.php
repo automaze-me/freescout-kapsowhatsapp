@@ -20,6 +20,18 @@ class KapsoMessage extends Model
      */
     const LINEITEM_META_DELIVERY_FAILED = 'kapsowhatsapp_delivery_failed';
 
+    /**
+     * Thread::meta key set on the reply thread SendReplyMessage created, once
+     * ReconcileOutboundMessage sees the matching `whatsapp.message.sent`
+     * webhook for that thread's own accepted send. Presence alone renders the
+     * "Sent via WhatsApp" marker -- see KapsoWhatsAppServiceProvider's
+     * `thread.meta` action -- the ISO-8601 timestamp value itself is not
+     * rendered, kept only for debugging. Never set on a row that is, or later
+     * becomes, `failed`: see ReconcileOutboundMessage's own docblock for why
+     * a `sent` event can never win against a `failed` one.
+     */
+    const THREAD_META_SENT_AT = 'kapsowhatsapp_sent_at';
+
     const SEND_STATE_SENDING  = 'sending';
     const SEND_STATE_ACCEPTED = 'accepted';
     const SEND_STATE_FAILED   = 'failed';

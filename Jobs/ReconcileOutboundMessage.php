@@ -97,12 +97,17 @@ class ReconcileOutboundMessage implements ShouldQueue
 
         // whatsapp.message.sent
         if ($known) {
-            // Our own send, one already reconciled, or one a `failed` event
-            // for this same wamid already recorded — possibly before this
-            // `sent` event was even processed. Never overwritten here,
-            // regardless of what `$known->status` currently holds: this is
-            // what keeps a message that actually failed from ever being
-            // flipped back to looking delivered.
+            // Our own send (thread_id + send_state accepted, written by
+            // SendReplyMessage), one already reconciled, or one a `failed`
+            // event for this same wamid already recorded — possibly before
+            // this `sent` event was even processed. markOwnSendSent() is the
+            // only thing that ever writes to this row from here, and it
+            // never overwrites a row already `failed`, regardless of what
+            // this `sent` event says: that is what keeps a message that
+            // actually failed from ever being flipped back to looking
+            // delivered.
+            $this->markOwnSendSent($known);
+
             return;
         }
 
@@ -208,6 +213,48 @@ class ReconcileOutboundMessage implements ShouldQueue
             // try to resurrect the row as "sent"; simply deferring is what
             // keeps that message looking failed rather than delivered.
         }
+    }
+
+    /**
+     * A `sent` event for a wamid this module already has a row for. Only
+     * acts when that row is our own accepted send -- `thread_id` and
+     * `send_state` set by SendReplyMessage's claimAndSend() -- and is not
+     * already `failed`; any other known row (a foreign send already
+     * reconciled, a duplicate delivery of this same event, ...) is left
+     * untouched. Claims the status flip with an atomic
+     * `UPDATE ... WHERE status IS NULL`, mirroring applyFailureToRow()'s own
+     * claim below: the row starts with `status` NULL (SendReplyMessage never
+     * writes that column, only `send_state`), so this is what stops a
+     * concurrent/duplicate delivery of the same `sent` event from marking the
+     * thread twice, and -- critically -- what stops this from ever winning a
+     * race against a `failed` event for the same wamid that commits its own
+     * status write first: if that happens, `status` is no longer NULL by the
+     * time this UPDATE runs, `$claimed` is 0, and this method does nothing.
+     * That is the same "failed-first hardening must keep winning" guarantee
+     * `recordFailure()`'s docblock describes, applied to this side of it.
+     */
+    protected function markOwnSendSent(KapsoMessage $known)
+    {
+        if (!$known->thread_id || $known->send_state !== KapsoMessage::SEND_STATE_ACCEPTED || $known->status === 'failed') {
+            return;
+        }
+
+        $claimed = KapsoMessage::where('id', $known->id)
+            ->whereNull('status')
+            ->update(['status' => 'sent']);
+
+        if (!$claimed) {
+            return;
+        }
+
+        $thread = Thread::find($known->thread_id);
+
+        if (!$thread) {
+            return;
+        }
+
+        $thread->setMeta(KapsoMessage::THREAD_META_SENT_AT, now()->toIso8601String());
+        $thread->save();
     }
 
     /**

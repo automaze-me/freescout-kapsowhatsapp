@@ -3,10 +3,10 @@
 WhatsApp as a communication channel for [FreeScout](https://freescout.net), via the
 [Kapso](https://kapso.ai) API.
 
-This module currently handles **inbound** messages: WhatsApp messages become FreeScout
-conversations and threads, with media, reactions and customer identity matching, and it
-registers and monitors its own Kapso webhook so no manual setup step is needed. Replies are not
-yet sent from FreeScout.
+This module handles both directions: WhatsApp messages become FreeScout conversations and
+threads, with media, reactions and customer identity matching, and replying from FreeScout
+delivers the reply to WhatsApp. It registers and monitors its own Kapso webhook so no manual
+setup step is needed.
 
 ## Requirements
 
@@ -61,25 +61,33 @@ own dashboard.
   \Option::set('kapsowhatsapp.default_country_code', '49'); // bare digits, no "+"
   ```
 
+## Replying from FreeScout
+
+Replying to a WhatsApp conversation delivers the reply to the customer via Kapso: a long reply is
+split into multiple WhatsApp messages automatically, and each attachment goes out as its own image
+or document message. Once Kapso confirms the send, the reply is marked *Sent via WhatsApp* on the
+conversation. Replying also marks the customer's own most recent message as read (the blue ticks).
+
 ## Outbound event reconciliation
 
-Kapso also delivers `whatsapp.message.sent` and `whatsapp.message.failed` to the webhook. These
-exist so FreeScout's copy of the conversation stays complete even while something *other* than
-FreeScout is sending WhatsApp messages for the same number — while native sending from FreeScout
-itself is not yet implemented, that is the n8n bridge, or an agent using Kapso's own inbox
-directly.
+Kapso delivers `whatsapp.message.sent` and `whatsapp.message.failed` to the webhook for every
+message on the number. These keep FreeScout's copy of the conversation complete and correct in two
+ways: recognising FreeScout's own sends (see above) without duplicating them, and recording
+messages sent by something *other* than FreeScout for the same number — an n8n bridge, or an agent
+using Kapso's own inbox directly.
 
 - **A send made outside FreeScout** appears as a normal-looking outbound thread on the matching
   conversation, marked *"Sent outside FreeScout"* so it's clear the reply did not originate here.
-  A send FreeScout itself already knows about (once native sending is added) is recognised by its
-  message id and not duplicated.
-- **A delivery failure** — the customer-service window has closed, the number is invalid, etc. —
-  is posted as a line item on the conversation with Kapso's error code and message, so a failed
-  send is never silently invisible. This is posted whether or not the corresponding `sent` event
-  has been processed yet: Kapso does not guarantee event ordering, so a failure can arrive before
-  its sibling send, or the send event may never arrive at all for some error classes. Once a
-  message is marked failed this way, a `sent` event for the same message id can never overwrite
-  that outcome.
+  A send FreeScout itself already knows about — every reply sent from FreeScout — is recognised by
+  its message id and marked *Sent via WhatsApp* rather than duplicated.
+- **A delivery failure** — the customer-service window has closed (WhatsApp only allows free-form
+  replies within 24 hours of the customer's last message), the number is invalid, etc. — is posted
+  as a red line item on the conversation with Kapso's error code and message, whether the send was
+  made from FreeScout or elsewhere, so a failed send is never silently invisible. This is posted
+  whether or not the corresponding `sent` event has been processed yet: Kapso does not guarantee
+  event ordering, so a failure can arrive before its sibling send, or the send event may never
+  arrive at all for some error classes. Once a message is marked failed this way, a `sent` event
+  for the same message id can never overwrite that outcome.
 - The conversation a foreign send or failure attaches to is found by matching the WhatsApp
   number against this module's own message history for the account, without regard to whether
   that conversation is currently open or closed.
