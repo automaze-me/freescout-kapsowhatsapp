@@ -186,11 +186,7 @@ class KapsoClient
      */
     public function sendWhatsAppMessage(array $payload)
     {
-        return $this->metaRequest(
-            'POST',
-            '/'.rawurlencode((string) $this->account->phone_number_id).'/messages',
-            $payload
-        );
+        return $this->metaRequest('POST', $this->messagesPath(), $payload);
     }
 
     /**
@@ -219,7 +215,7 @@ class KapsoClient
      */
     public function markMessageRead($wamid)
     {
-        $this->metaRequest('POST', '/'.rawurlencode((string) $this->account->phone_number_id).'/messages', [
+        $this->metaRequest('POST', $this->messagesPath(), [
             'messaging_product' => 'whatsapp',
             'status'            => 'read',
             'message_id'        => (string) $wamid,
@@ -229,6 +225,17 @@ class KapsoClient
     protected function webhooksPath()
     {
         return '/whatsapp/phone_numbers/'.rawurlencode((string) $this->account->phone_number_id).'/webhooks';
+    }
+
+    /**
+     * Meta-proxy counterpart of webhooksPath(): both sendWhatsAppMessage()
+     * and markMessageRead() POST to the same `{phone_number_id}/messages`
+     * endpoint, one with a message payload and the other with a read-status
+     * payload.
+     */
+    protected function messagesPath()
+    {
+        return '/'.rawurlencode((string) $this->account->phone_number_id).'/messages';
     }
 
     protected function dataList(array $response)
@@ -262,8 +269,9 @@ class KapsoClient
     /**
      * http_errors is off so every failure -- 401, 404, 422, 5xx -- comes back
      * through one place and turns into an admin-readable message. Timeouts are
-     * deliberately short: this runs inside an admin page request, not a queue
-     * worker.
+     * deliberately short: this call can run either inside an admin page
+     * request (webhook management) or inside a queue worker (sending a
+     * reply) -- a hung request must not stall either one.
      */
     protected function apiRequest($method, $url, array $body = null, array $query = [])
     {
