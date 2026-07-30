@@ -54,22 +54,36 @@ class SendReplyMessage implements ShouldQueue
     public $tries = 3;
 
     /**
-     * Seconds Laravel allows one execution of handle() to run before it
-     * kills the child process. The queue worker itself runs with
-     * `--timeout=120` (docker-compose.yml) -- a *second*, outer timeout that
-     * SIGKILLs the whole worker with zero cleanup if it ever fires. Sized as
-     * close to the worst legitimate case as that leaves room for: a
-     * multi-attachment reply can need on the order of 6 sequential HTTP
-     * round-trips (several image/document sends plus the final mark-read)
-     * at up to ~20s each against a slow/degraded Kapso, i.e. close to 120s.
-     * $timeout must stay *under* the worker's 120 -- not equal to it -- so
-     * that on a genuine hang this job's own timeout is the one that fires:
-     * Laravel kills just this job, marks it failed, and its failed() hook
-     * still gets to record the failure. If the two were equal (or this one
-     * were higher), the worker's outer SIGKILL could win the race instead,
-     * losing the reply's state entirely with no line item and no log line.
+     * Seconds Laravel allows one execution of handle() to run before it acts
+     * on this job specifically. `Worker::timeoutForJob()` returns *this*
+     * property INSTEAD OF the worker's own `--timeout` option whenever a job
+     * declares one -- one `pcntl_alarm()`, never two, so there is no race
+     * between an inner and an outer timeout to reason about. (Do not cite
+     * docker-compose.yml here: that is this repo's private dev harness, not
+     * how a real install runs workers -- core launches them via its own
+     * scheduler with `--timeout=1800`, config/app.php:196, which this
+     * property replaces for this job specifically.)
+     *
+     * What actually happens on SIGALRM, in Laravel 5.5: the worker's signal
+     * handler calls `$this->kill(1)`, i.e. `exit(1)` -- the WHOLE worker
+     * process dies immediately. Nothing is marked failed and failed() is NOT
+     * called at that moment; every part this job had claimed is left exactly
+     * as it stood. Recovery instead happens later, passively: the reserved
+     * job's `retry_after` window (90s, config/queue.php) eventually expires,
+     * and the *next* worker to pop the queue runs
+     * `markJobAsFailedIfAlreadyExceedsMaxAttempts()`, which is what finally
+     * calls failed() for it.
+     *
+     * That recovery path is also why this value must stay *below*
+     * retry_after (90), not merely below the outer worker timeout: 80 < 90
+     * restores Laravel's own intended ordering -- this job's alarm fires,
+     * and is accounted for, before the reservation it was holding would
+     * otherwise have expired on its own. (Running more than one worker isn't
+     * a supported FreeScout configuration in the first place -- core's own
+     * Kernel.php actively kills extra worker processes -- so the
+     * single-worker case is the only one this needs to hold for.)
      */
-    public $timeout = 110;
+    public $timeout = 80;
 
     public function __construct($threadId)
     {
@@ -114,7 +128,7 @@ class SendReplyMessage implements ShouldQueue
                     throw $e;
                 }
 
-                $this->finalizeFailure($thread, $conversation, $e);
+                $this->finalizeFailure($thread, $conversation, $e->getMessage());
 
                 return;
             }
@@ -379,15 +393,44 @@ class SendReplyMessage implements ShouldQueue
      * via an operator manually re-queuing the same reply -- a narrower,
      * accepted gap, not the same "no guard at all" story as the wamid-crash
      * window documented on the class above.
+     *
+     * $summary is a plain, already-safe-to-show-an-agent string, not an
+     * exception -- see the two call sites (handle()'s catch and failed())
+     * for how each derives one from what actually failed.
      */
-    protected function finalizeFailure(Thread $thread, Conversation $conversation, \Throwable $e)
+    protected function finalizeFailure(Thread $thread, Conversation $conversation, string $summary)
     {
+        $parts = KapsoMessage::where('thread_id', $thread->id)->whereNotNull('part_key');
+
+        if (!(clone $parts)->where('send_state', '<>', KapsoMessage::SEND_STATE_ACCEPTED)->exists()
+            && (clone $parts)->exists()) {
+            // Every part accepted, nothing left unsent: whatever killed this
+            // job happened after the reply was fully delivered (e.g. SIGKILL
+            // during the best-effort mark-read, or mid-list timeouts that
+            // still made forward progress each attempt). Recording a
+            // failure -- or clearing the marker -- would be the one thing
+            // this module must never do: lie about what the customer got.
+            \Log::error('[KapsoWhatsApp] SendReplyMessage: job failed after every part was accepted, nothing recorded', [
+                'thread_id' => $thread->id, 'conversation_id' => $conversation->id,
+            ]);
+
+            return;
+        }
+
         KapsoMessage::where('thread_id', $thread->id)
             ->whereNotNull('part_key')
             ->where('send_state', '<>', KapsoMessage::SEND_STATE_ACCEPTED)
-            ->update(['send_state' => KapsoMessage::SEND_STATE_FAILED, 'error' => $e->getMessage()]);
+            ->update(['send_state' => KapsoMessage::SEND_STATE_FAILED, 'error' => $summary]);
 
-        DeliveryFailureLineItem::create($conversation, $e->getMessage());
+        // Same invariant as ReconcileOutboundMessage::applyFailureToRow():
+        // the marker means delivered-and-healthy, so a recorded failure
+        // clears it. A `sent` webhook for an earlier, accepted part may
+        // already have stamped it between this job's attempts (a released
+        // retry queues *behind* that webhook's job).
+        $thread->setMeta(KapsoMessage::THREAD_META_SENT_AT, null);
+        $thread->save();
+
+        DeliveryFailureLineItem::create($conversation, $summary);
     }
 
     /**
@@ -408,8 +451,21 @@ class SendReplyMessage implements ShouldQueue
      * gone; bails quietly if either is gone by now; otherwise reuses
      * finalizeFailure() rather than duplicating its update-and-line-item
      * logic.
+     *
+     * $e is nullable: Laravel's own `FailingJob::handle()` genuinely defaults
+     * it to null (see vendor/laravel/framework/src/Illuminate/Queue/
+     * FailingJob.php), and `Job::fail()` is public API a caller could invoke
+     * the same way, so this method must survive being called with nothing at
+     * all. Only a KapsoApiException's message is safe to show an agent
+     * verbatim (KapsoClient already sanitises and translates it); anything
+     * else -- most notably the timeout/SIGKILL class, which reaches here as a
+     * raw `MaxAttemptsExceededException` whose message is an untranslated FQCN
+     * sentence -- is replaced with a generic, translated summary. The real
+     * exception (or its absence) is still logged in full, at error, before
+     * delegating, so nothing is actually lost -- it just never reaches the
+     * agent-visible line item verbatim.
      */
-    public function failed(\Throwable $e)
+    public function failed(\Throwable $e = null)
     {
         $thread = Thread::find($this->threadId);
 
@@ -423,7 +479,17 @@ class SendReplyMessage implements ShouldQueue
             return;
         }
 
-        $this->finalizeFailure($thread, $conversation, $e);
+        \Log::error('[KapsoWhatsApp] SendReplyMessage: job permanently failed', [
+            'thread_id'       => $thread->id,
+            'conversation_id' => $conversation->id,
+            'exception'       => $e ? get_class($e).': '.$e->getMessage() : 'no exception',
+        ]);
+
+        $summary = $e instanceof KapsoApiException
+            ? $e->getMessage()
+            : __('The reply could not be delivered to WhatsApp. See the log for details.');
+
+        $this->finalizeFailure($thread, $conversation, $summary);
     }
 
     /**

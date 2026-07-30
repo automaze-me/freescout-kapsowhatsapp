@@ -543,6 +543,15 @@ class SendReplyTest extends TestCase
      * against a row left `sending` as if a previous attempt had crashed
      * mid-send, rather than trying to coax a genuine non-KapsoApiException
      * throw out of the HTTP mock.
+     *
+     * Post-M1: a plain \RuntimeException is exactly the class this fixture
+     * used to (wrongly) show verbatim to the agent -- see
+     * test_failed_without_an_api_exception_posts_a_translated_summary() for
+     * the dedicated coverage of that translation. This test's own job is
+     * narrower and still worth keeping: proving the *mechanism* -- a row
+     * left `sending` really does flip to `failed` and really does produce
+     * exactly one line item -- regardless of which summary text ends up in
+     * it.
      */
     public function test_failed_hook_marks_sending_parts_failed_and_posts_one_line_item()
     {
@@ -562,11 +571,128 @@ class SendReplyTest extends TestCase
 
         $row = $row->fresh();
         $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
-        $this->assertStringContainsString('worker process was killed', (string) $row->error);
+        $this->assertStringContainsString(
+            __('The reply could not be delivered to WhatsApp. See the log for details.'),
+            (string) $row->error
+        );
 
         $lineItems = Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->get();
         $this->assertCount(1, $lineItems);
-        $this->assertStringContainsString('worker process was killed', $lineItems->first()->body);
+        $this->assertStringContainsString(
+            __('The reply could not be delivered to WhatsApp. See the log for details.'),
+            $lineItems->first()->body
+        );
+    }
+
+    /**
+     * Branch reviewer M2 (the all-accepted gate): once every part of a reply
+     * has reached `accepted`, whatever kills the job afterwards -- e.g. a
+     * SIGKILL during the best-effort mark-read call, well after Kapso
+     * already has the message -- must never record a failure or clear a
+     * marker: the reply already delivered exactly what the customer got.
+     * failed() is exercised directly here, the same way
+     * test_failed_hook_marks_sending_parts_failed_and_posts_one_line_item()
+     * does, against a fixture whose only part is already `accepted` --
+     * simulating the marker being already stamped (via setMeta() directly,
+     * the same technique SentMarkerTest's crash-window test uses) so the
+     * assertion covers "left exactly as found", not just "no new failure
+     * clears it".
+     */
+    public function test_a_job_failure_after_full_delivery_records_nothing()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT1']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+
+        $thread->setMeta(KapsoMessage::THREAD_META_SENT_AT, now()->toIso8601String());
+        $thread->save();
+
+        (new SendReplyMessage($thread->id))->failed(new \RuntimeException('boom'));
+
+        $row = $row->fresh();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state, 'an already-accepted part must be untouched');
+        $this->assertNull($row->error);
+
+        $thread = $thread->fresh();
+        $this->assertNotNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a job failure after every part was already accepted must not clear an existing marker');
+
+        $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count(),
+            'a job failure after every part was already accepted must record nothing');
+    }
+
+    /**
+     * Branch reviewer M1 (honest failed() summary) + nullable (carried (c)):
+     * the timeout/SIGKILL class reaches failed() as a
+     * MaxAttemptsExceededException (or, here, any non-KapsoApiException),
+     * whose raw ->getMessage() is not meant for an agent to read verbatim
+     * and is never translated. A RuntimeException stands in for that whole
+     * class. failed(null) is exercised too -- FailingJob::handle() genuinely
+     * defaults $e to null, and Job::fail() is public API -- so failed() must
+     * tolerate that without a TypeError and still post the same generic,
+     * translated summary.
+     */
+    public function test_failed_without_an_api_exception_posts_a_translated_summary()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $row = new KapsoMessage();
+        $row->account_id      = $account->id;
+        $row->conversation_id = $conversation->id;
+        $row->thread_id       = $thread->id;
+        $row->part_key        = KapsoMessage::PART_BODY;
+        $row->direction       = KapsoMessage::DIRECTION_OUTBOUND;
+        $row->send_state      = KapsoMessage::SEND_STATE_SENDING;
+        $row->contact_phone   = $inbound->contact_phone;
+        $row->save();
+
+        (new SendReplyMessage($thread->id))->failed(new \RuntimeException('Some\FQCN raw text'));
+
+        $lineItems = Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->get();
+        $this->assertCount(1, $lineItems);
+
+        $body = $lineItems->first()->body;
+        $this->assertStringNotContainsString('RuntimeException', $body);
+        $this->assertStringNotContainsString('Some\FQCN raw text', $body);
+        $this->assertStringContainsString(
+            __('The reply could not be delivered to WhatsApp. See the log for details.'),
+            $body
+        );
+
+        // A fresh conversation off the same account (makeAccount() hardcodes
+        // a single phone_number_id, unique per account, so a second
+        // full scenario() would collide on it), so this second conversation's
+        // line-item count isn't polluted by the assertion above.
+        $conversation2 = $this->makeConversation($account);
+        $inbound2      = $this->seedInbound($account, $conversation2, 'wamid.IN2');
+        $thread2       = $this->makeReplyThread($conversation2);
+
+        $row2 = new KapsoMessage();
+        $row2->account_id      = $account->id;
+        $row2->conversation_id = $conversation2->id;
+        $row2->thread_id       = $thread2->id;
+        $row2->part_key        = KapsoMessage::PART_BODY;
+        $row2->direction       = KapsoMessage::DIRECTION_OUTBOUND;
+        $row2->send_state      = KapsoMessage::SEND_STATE_SENDING;
+        $row2->contact_phone   = $inbound2->contact_phone;
+        $row2->save();
+
+        (new SendReplyMessage($thread2->id))->failed(null);
+
+        $lineItems2 = Thread::where('conversation_id', $conversation2->id)->where('type', Thread::TYPE_LINEITEM)->get();
+        $this->assertCount(1, $lineItems2, 'failed(null) must not TypeError and must still post a line item');
+        $this->assertStringContainsString(
+            __('The reply could not be delivered to WhatsApp. See the log for details.'),
+            $lineItems2->first()->body
+        );
     }
 
     /**

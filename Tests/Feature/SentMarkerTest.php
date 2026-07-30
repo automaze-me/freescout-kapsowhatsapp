@@ -423,6 +423,72 @@ class SentMarkerTest extends TestCase
      * state (status already flipped, meta missing) by deleting the meta a
      * normal run just stamped, then redelivers the identical `sent` webhook.
      */
+    /**
+     * Branch reviewer I1: the reachable single-worker race the fix note
+     * describes -- part 1 accepted, part 2 rethrows on a non-final attempt,
+     * the released retry queues *behind* part 1's already-arrived `sent`
+     * webhook (DatabaseQueue::release inserts a new row, pop orders id ASC),
+     * the webhook stamps the marker between this job's attempts, then
+     * retries exhaust and finalizeFailure() runs with the marker already
+     * standing. Part 1's accepted row is built directly (mirroring
+     * SendReplyTest::test_failed_hook_marks_sending_parts_failed_and_posts_one_line_item's
+     * direct-row convention) rather than sent through a real HTTP call, so
+     * the fixture controls exactly what's already landed before the webhook
+     * fires; part 2 (the attachment) then fails for real through the job's
+     * own final-attempt path.
+     */
+    public function test_a_request_time_failure_clears_a_marker_stamped_between_attempts()
+    {
+        $scenario = $this->scenario();
+        [$account, $conversation, , $thread] = $scenario;
+
+        $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $bodyRow = new KapsoMessage();
+        $bodyRow->account_id      = $account->id;
+        $bodyRow->conversation_id = $conversation->id;
+        $bodyRow->thread_id       = $thread->id;
+        $bodyRow->part_key        = KapsoMessage::PART_BODY;
+        $bodyRow->direction       = KapsoMessage::DIRECTION_OUTBOUND;
+        $bodyRow->send_state      = KapsoMessage::SEND_STATE_ACCEPTED;
+        $bodyRow->wamid           = 'wamid.PART1';
+        $bodyRow->contact_phone   = '+491771234567';
+        $bodyRow->save();
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.PART1')))->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNotNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'precondition: the sent webhook for the already-accepted part must stamp the marker');
+
+        // The job's real final attempt: part 1 is skipped outright (already
+        // accepted, no HTTP call), part 2 (the attachment) fails and
+        // exhausts retries -- finalizeFailure() must clear the marker the
+        // webhook just stamped between attempts.
+        $this->fakeResponses([
+            new Response(500, [], json_encode(['error' => 'image relay error'])),
+        ]);
+
+        $job = new SendReplyMessage($thread->id);
+        $job->tries = 1;
+        $job->handle();
+
+        $thread = $thread->fresh();
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
+            'a request-time failure must clear a marker stamped between attempts');
+        $html = $this->renderThreadMeta($thread, $conversation);
+        $this->assertStringNotContainsString('Sent via WhatsApp', $html);
+
+        $attRow = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $attRow->send_state);
+
+        $lineItems = Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->get();
+        $this->assertCount(1, $lineItems, 'exactly one line item, not one per part');
+    }
+
     public function test_a_duplicate_sent_webhook_restamps_a_marker_lost_to_a_crash()
     {
         $scenario = $this->scenario();
