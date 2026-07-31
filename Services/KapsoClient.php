@@ -249,6 +249,51 @@ class KapsoClient
     }
 
     /**
+     * Stage 3c: the project's WhatsApp message templates, narrowed to the
+     * ones this module's send path can actually fill. Meta returns every
+     * template regardless of status or shape (media headers, dynamic
+     * buttons, carousels, ...); this slice is text-body only -- the UI must
+     * never offer something the send path cannot fill -- so eligibility is
+     * enforced here, server-side, not left to the picker:
+     *
+     *   - status must be APPROVED (draft/pending/rejected templates cannot
+     *     be sent by anyone, agent-facing or not);
+     *   - exactly one BODY component, with a plain string `text`;
+     *   - every non-BODY component must be parameter-free: a HEADER is fine
+     *     only when it is TEXT format and its own text carries no `{{`
+     *     placeholder (a media header has nothing this module could
+     *     supply); a FOOTER is always fine (Meta only allows static footer
+     *     text); BUTTONS are fine only when no button's text/url contains
+     *     `{{` (a dynamic button URL is a parameter like any other).
+     *
+     * `variables` is the highest `{{n}}` placeholder index found in the
+     * BODY text (0 when the body has none) -- this is what tells the
+     * caller how many text inputs the picker needs to render.
+     *
+     * Total parser: every array access is guarded and any template whose
+     * shape does not match the above (including a wholly malformed
+     * response) is silently skipped rather than thrown -- one unexpected
+     * template must never take down the whole list, and a malformed
+     * response as a whole degrades to an empty list (never an exception).
+     */
+    public function listMessageTemplates()
+    {
+        $templates = $this->dataList($this->metaRequest('GET', $this->templatesPath()));
+
+        $eligible = [];
+
+        foreach ($templates as $template) {
+            $normalised = $this->normaliseTemplate($template);
+
+            if ($normalised !== null) {
+                $eligible[] = $normalised;
+            }
+        }
+
+        return $eligible;
+    }
+
+    /**
      * Marks an inbound message read (blue ticks for the customer). Throws on
      * failure like every other call here -- this is best-effort only in the
      * sense that callers may choose to swallow the exception, not because
@@ -277,6 +322,137 @@ class KapsoClient
     protected function messagesPath()
     {
         return '/'.rawurlencode((string) $this->account->phone_number_id).'/messages';
+    }
+
+    /**
+     * Meta-proxy counterpart of webhooksPath() for Stage 3c's template
+     * list: the business account, not the phone number, owns the project's
+     * templates (a project can have several numbers sharing one set of
+     * approved templates).
+     */
+    protected function templatesPath()
+    {
+        return '/'.rawurlencode((string) $this->account->business_account_id).'/message_templates';
+    }
+
+    /**
+     * One entry of listMessageTemplates()'s raw `data[]`, turned into
+     * `['name', 'language', 'body', 'variables']` or null when the entry is
+     * not an eligible text-body template -- see listMessageTemplates()'s
+     * docblock for the eligibility rules this enforces. Guards every array
+     * access; an unrecognised component type is treated the same as a
+     * disqualifying one (returns null for the whole template) rather than
+     * being ignored, since a shape this parser does not understand is a
+     * shape it cannot promise the send path can fill either.
+     */
+    protected function normaliseTemplate($template)
+    {
+        if (!is_array($template)) {
+            return null;
+        }
+
+        if (!isset($template['status']) || $template['status'] !== 'APPROVED') {
+            return null;
+        }
+
+        if (!isset($template['name']) || !is_string($template['name']) || $template['name'] === '') {
+            return null;
+        }
+
+        if (!isset($template['language']) || !is_string($template['language']) || $template['language'] === '') {
+            return null;
+        }
+
+        if (!isset($template['components']) || !is_array($template['components'])) {
+            return null;
+        }
+
+        $body = null;
+
+        foreach ($template['components'] as $component) {
+            if (!is_array($component) || !isset($component['type']) || !is_string($component['type'])) {
+                return null;
+            }
+
+            switch (strtoupper($component['type'])) {
+                case 'BODY':
+                    // Exactly one BODY component is expected; a second one
+                    // is a shape this module does not understand.
+                    if ($body !== null) {
+                        return null;
+                    }
+                    if (!isset($component['text']) || !is_string($component['text'])) {
+                        return null;
+                    }
+                    $body = $component['text'];
+                    break;
+
+                case 'HEADER':
+                    $format = isset($component['format']) && is_string($component['format'])
+                        ? strtoupper($component['format']) : null;
+                    if ($format !== 'TEXT') {
+                        // Media header (IMAGE/VIDEO/DOCUMENT/LOCATION) or an
+                        // unrecognised format -- this send path has nothing
+                        // to supply for it.
+                        return null;
+                    }
+                    $headerText = isset($component['text']) && is_string($component['text'])
+                        ? $component['text'] : '';
+                    if (strpos($headerText, '{{') !== false) {
+                        return null;
+                    }
+                    break;
+
+                case 'FOOTER':
+                    // Meta only allows static footer text -- no parameters
+                    // are possible here, nothing to check.
+                    break;
+
+                case 'BUTTONS':
+                    $buttons = isset($component['buttons']) && is_array($component['buttons'])
+                        ? $component['buttons'] : [];
+                    foreach ($buttons as $button) {
+                        if (!is_array($button)) {
+                            return null;
+                        }
+                        $buttonText = isset($button['text']) && is_string($button['text']) ? $button['text'] : '';
+                        $buttonUrl  = isset($button['url']) && is_string($button['url']) ? $button['url'] : '';
+                        if (strpos($buttonText, '{{') !== false || strpos($buttonUrl, '{{') !== false) {
+                            return null;
+                        }
+                    }
+                    break;
+
+                default:
+                    return null;
+            }
+        }
+
+        if ($body === null) {
+            return null;
+        }
+
+        return [
+            'name'      => $template['name'],
+            'language'  => $template['language'],
+            'body'      => $body,
+            'variables' => $this->maxTemplateVariable($body),
+        ];
+    }
+
+    /**
+     * The highest numbered `{{n}}` placeholder in a template BODY text, 0
+     * when it has none. Named parameters (`{{customer_name}}`, Meta's newer
+     * template syntax) are deliberately out of scope -- Stage 3c's send
+     * payload only ever builds positional `{{n}}` parameters.
+     */
+    protected function maxTemplateVariable($body)
+    {
+        if (!preg_match_all('/\{\{(\d+)\}\}/', $body, $matches)) {
+            return 0;
+        }
+
+        return (int) max(array_map('intval', $matches[1]));
     }
 
     protected function dataList(array $response)

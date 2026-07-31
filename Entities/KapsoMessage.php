@@ -59,6 +59,14 @@ class KapsoMessage extends Model
 
     const PART_BODY = 'body';
 
+    /**
+     * part_key for a Stage 3c template send: one claim row per template
+     * message (a template send is never chunked or captioned the way a
+     * regular reply's body/attachment parts are), on the same
+     * (thread_id, part_key) unique index every other part uses.
+     */
+    const PART_TEMPLATE = 'tpl';
+
     protected $table = 'kapso_whatsapp_messages';
 
     protected $fillable = [
