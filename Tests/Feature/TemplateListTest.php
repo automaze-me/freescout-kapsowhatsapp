@@ -172,6 +172,45 @@ class TemplateListTest extends TestCase
         $this->assertSame(0, $offered['static_footer_template']['variables']);
     }
 
+    /**
+     * Meta also approves templates whose body uses *named* parameters
+     * ({{customer_name}} instead of {{1}}). The send path only ever builds
+     * positional parameters, and variable counting only sees {{n}} -- so a
+     * named-parameter body would be offered as a zero-input template and
+     * then rejected by Meta at send time. Eligibility must therefore
+     * exclude any body whose placeholders are not all positional.
+     */
+    public function test_a_named_parameter_body_is_not_offered()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                [
+                    'name'       => 'named_param_template',
+                    'language'   => 'en_US',
+                    'status'     => 'APPROVED',
+                    'category'   => 'UTILITY',
+                    'components' => [
+                        ['type' => 'BODY', 'text' => 'Hi {{customer_name}}, your order is ready'],
+                    ],
+                ],
+                [
+                    'name'       => 'positional_template',
+                    'language'   => 'en_US',
+                    'status'     => 'APPROVED',
+                    'category'   => 'UTILITY',
+                    'components' => [
+                        ['type' => 'BODY', 'text' => 'Hi {{1}}, your order is ready'],
+                    ],
+                ],
+            ]])),
+        ]);
+
+        $templates = (new KapsoClient($this->account()))->listMessageTemplates();
+
+        $this->assertSame(['positional_template'], array_column($templates, 'name'));
+        $this->assertSame(1, $templates[0]['variables']);
+    }
+
     public function test_a_malformed_list_response_yields_an_empty_list()
     {
         $this->fakeResponses([

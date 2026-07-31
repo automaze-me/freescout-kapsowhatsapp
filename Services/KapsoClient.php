@@ -384,6 +384,15 @@ class KapsoClient
                     if (!isset($component['text']) || !is_string($component['text'])) {
                         return null;
                     }
+                    // Meta also approves *named* parameters
+                    // ({{customer_name}}); the send path only builds
+                    // positional {{n}} ones and the variable count only
+                    // sees {{n}}, so any `{{` left after removing the
+                    // positional placeholders is a parameter this module
+                    // cannot fill.
+                    if (strpos(preg_replace('/\{\{\d+\}\}/', '', $component['text']), '{{') !== false) {
+                        return null;
+                    }
                     $body = $component['text'];
                     break;
 
