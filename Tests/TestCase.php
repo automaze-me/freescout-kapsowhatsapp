@@ -17,8 +17,12 @@ abstract class TestCase extends CoreTestCase
      * See deleteAttachmentFilesWrittenDuringThisTest() below for why this
      * matters: it is what keeps that method from touching a single row it
      * did not create itself.
+     *
+     * Null (not 0) until setUp() completes: null means "never recorded",
+     * and the cleanup refuses to run in that state. This distinction is
+     * load-bearing — see the incident note on the cleanup method.
      */
-    private $attachmentIdWatermark = 0;
+    private $attachmentIdWatermark = null;
 
     protected function setUp(): void
     {
@@ -84,6 +88,31 @@ abstract class TestCase extends CoreTestCase
      */
     private function deleteAttachmentFilesWrittenDuringThisTest(): void
     {
+        // INCIDENT GUARDS (2026-07-30, real production data loss on a dev
+        // install): with a stale config cache the suite ran on the LIVE
+        // mysql connection. setUp()'s DB guard fail()ed BEFORE the
+        // watermark was recorded, PHPUnit still ran tearDown(), and this
+        // method's query — then `where('id', '>', 0)` — matched every
+        // production attachment. deleteForever() removed the real files
+        // permanently while its DB deletes were undone by the
+        // test-transaction rollback (disk writes are not transactional):
+        // files gone, rows intact, nothing in any log. Hence two refusals,
+        // each sufficient on its own:
+        //
+        // 1. A null watermark means setUp() never completed — this method
+        //    then has no idea what it owns, so it owns nothing.
+        // 2. Whatever the watermark says, never run against anything but
+        //    the `testing` connection. Checked here and not only in setUp()
+        //    because setUp()'s check is precisely what the incident proved
+        //    can be bypassed.
+        if ($this->attachmentIdWatermark === null) {
+            return;
+        }
+
+        if (config('database.default') !== 'testing') {
+            return;
+        }
+
         $attachments = Attachment::where('id', '>', $this->attachmentIdWatermark)->get();
 
         if ($attachments->isNotEmpty()) {
