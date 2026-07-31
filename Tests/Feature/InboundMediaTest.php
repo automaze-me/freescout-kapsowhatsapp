@@ -4,6 +4,11 @@ namespace Modules\KapsoWhatsApp\Tests\Feature;
 
 use App\Attachment;
 use App\Thread;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Jobs\ProcessInboundMessage;
@@ -182,5 +187,66 @@ class InboundMediaTest extends TestCase
         $this->assertSame(0, $thread->attachments()->count());
         $this->assertStringContainsString('photo.jpg', $thread->body,
             'the thread should say which attachment could not be retrieved');
+    }
+
+    /**
+     * SSRF guard: kapso.media_url / media_data.url are webhook-supplied and
+     * downloadMedia() fetches them server-side with the install's API key
+     * attached. These payloads must be refused before any HTTP request is
+     * made. Deliberately NOT using KapsoClient::fake() -- that seam replaces
+     * downloadMedia()'s behaviour outright, which would prove nothing about
+     * whether a real request almost went out. Instead KapsoClient::fakeHttp()
+     * wires the real Guzzle transport to a MockHandler that would happily
+     * serve attacker-controlled bytes for ANY URL: pre-fix, the mock gets
+     * consumed and the bytes get attached; post-fix, the guard refuses
+     * before the transport is ever touched, so the mock is never consumed.
+     * This also keeps the suite offline-deterministic -- no real DNS lookup
+     * or network call happens for any case, safe or unsafe.
+     *
+     * Refusal must degrade exactly like a failed download: no attachment, a
+     * failure note in the body, message/thread still created.
+     *
+     * @dataProvider unsafeMediaUrlProvider
+     */
+    public function test_an_unsafe_media_url_is_refused_before_any_download($unsafeUrl)
+    {
+        $account = $this->makeAccount();
+
+        $history = [];
+        $stack   = HandlerStack::create(new MockHandler([
+            new Response(200, [], 'attacker-controlled-bytes'),
+        ]));
+        $stack->push(Middleware::history($history));
+        KapsoClient::fakeHttp(new Client(['handler' => $stack]));
+
+        $payload = $this->mediaPayload();
+        $payload['message']['kapso']['media_url'] = $unsafeUrl;
+        $payload['message']['kapso']['media_data']['url'] = $unsafeUrl;
+
+        (new ProcessInboundMessage($account->id, $payload))->handle();
+
+        // The load-bearing assertion: if this is not 0, the mock response
+        // above -- standing in for whatever an attacker-controlled endpoint
+        // would return -- was fetched and about to be attached as if it
+        // were legitimate media.
+        $this->assertCount(0, $history,
+            'downloadMedia() must not make any HTTP request for an unsafe URL');
+
+        $threadId = KapsoMessage::where('wamid', 'wamid.media.1')->value('thread_id');
+        $thread   = Thread::findOrFail($threadId);
+
+        $this->assertSame(0, $thread->attachments()->count());
+        $this->assertStringContainsString('photo.jpg', $thread->body,
+            'the thread should say which attachment could not be retrieved');
+    }
+
+    public function unsafeMediaUrlProvider()
+    {
+        return [
+            'plain http, otherwise public host' => ['http://api.kapso.ai/media/abc'],
+            'https to IPv4 loopback'             => ['https://127.0.0.1/media/abc'],
+            'https to RFC1918 LAN host'          => ['https://192.168.1.10/x'],
+            'https to IPv6 loopback'             => ['https://[::1]/x'],
+        ];
     }
 }

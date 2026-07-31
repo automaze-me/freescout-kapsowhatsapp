@@ -77,10 +77,28 @@ class KapsoClient
      * Kapso media URLs are not public: they require the project API key.
      * Returns raw bytes, or null when the download fails for any reason —
      * losing an attachment must never lose the message.
+     *
+     * SSRF guard: $url comes straight from an inbound webhook payload
+     * (kapso.media_url / media_data.url). The payload is HMAC-authenticated,
+     * but this is defense in depth — a forged or compromised payload could
+     * otherwise point this server-side request (which carries the install's
+     * X-API-Key header) at an internal target: localhost, a cloud metadata
+     * IP, a LAN host — leaking the API key to whatever answers. Before any
+     * request — real or faked — the URL must be plain https to a
+     * non-private, non-reserved host, or it is refused and treated like any
+     * other failed download. Outbound WhatsApp links are always built by
+     * this app from APP_URL, never taken from a webhook, so the outbound
+     * path never calls this method and never passes through this guard.
      */
     public function downloadMedia($url)
     {
         if (!$url) {
+            return null;
+        }
+
+        if (!self::isMediaUrlSafe($url)) {
+            \Log::warning('[KapsoWhatsApp] Refused to download media: unsafe URL', ['url' => $url]);
+
             return null;
         }
 
@@ -105,6 +123,29 @@ class KapsoClient
 
             return null;
         }
+    }
+
+    /**
+     * The two checks downloadMedia() requires before it will fetch a URL:
+     * exactly https (Kapso always serves media over TLS; http:// and any
+     * non-http(s) scheme such as file:// or gopher:// is refused), and a
+     * public, non-reserved host per core's Helper::checkUrlIpAndHost(),
+     * which rejects loopback/private/link-local/metadata addresses and the
+     * app's own host. Guarded with method_exists() so the module still runs
+     * -- with today's unguarded behaviour -- on a core version that
+     * predates the helper.
+     */
+    protected static function isMediaUrlSafe($url)
+    {
+        if (parse_url($url, PHP_URL_SCHEME) !== 'https') {
+            return false;
+        }
+
+        if (method_exists(\Helper::class, 'checkUrlIpAndHost') && !\Helper::checkUrlIpAndHost($url)) {
+            return false;
+        }
+
+        return true;
     }
 
     public function listPhoneNumberWebhooks($urlContains = null)
