@@ -31,7 +31,26 @@
  * paths.
  */
 document.addEventListener('DOMContentLoaded', function () {
-    if (!document.querySelector('[data-kwa-window-closed]')) {
+    var closed = !!document.querySelector('[data-kwa-window-closed]');
+    var open   = !!document.querySelector('[data-kwa-window-open]');
+
+    // Colour the channel pill by window state. The pill is CORE markup
+    // (view.blade.php's .fs-tag.fs-tag-md next to the Chat Mode button) with
+    // no server-side styling hook, so it is classed here instead, keyed off
+    // the banner's own data markers rather than re-deriving the state. The
+    // channel pill is identified by its glyphicon-phone icon -- the Tags
+    // module renders its own .fs-tag elements into this row and those must
+    // keep their colours. (css/kapsowhatsapp.css defines the two classes;
+    // no Element.closest() -- IE11.)
+    if (closed || open) {
+        Array.prototype.slice.call(document.querySelectorAll('.conv-tags .fs-tag')).forEach(function (tag) {
+            if (tag.querySelector('.glyphicon-phone')) {
+                tag.classList.add(closed ? 'kwa-window-pill-closed' : 'kwa-window-pill-open');
+            }
+        });
+    }
+
+    if (!closed) {
         return;
     }
 

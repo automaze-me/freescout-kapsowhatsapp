@@ -152,6 +152,9 @@ class WindowBannerTest extends TestCase
         $this->assertStringContainsString('data-kwa-window-closed', $html);
         $this->assertStringContainsString('this window closed', $html);
         $this->assertStringContainsString('alert-danger', $html);
+        // The two data markers are mutually exclusive -- the JS colours the
+        // channel pill red-or-green off exactly one of them.
+        $this->assertStringNotContainsString('data-kwa-window-open', $html);
     }
 
     public function test_an_open_window_renders_the_status_line_without_the_block_marker()
@@ -164,6 +167,7 @@ class WindowBannerTest extends TestCase
         $html = $this->renderBanner($conversation, $account->mailbox);
 
         $this->assertStringContainsString('closes', $html);
+        $this->assertStringContainsString('data-kwa-window-open', $html);
         $this->assertStringNotContainsString('data-kwa-window-closed', $html);
     }
 
@@ -182,12 +186,27 @@ class WindowBannerTest extends TestCase
     {
         $javascripts = \Eventy::filter('javascripts', []);
 
+        // No query string allowed on these paths -- Minify stats them on
+        // disk and a ?v= buster takes the whole app bundle down (see the
+        // provider's comment). Assert the exact-suffix form.
         $matches = array_filter($javascripts, function ($path) {
-            return substr($path, -strlen('kapsowhatsapp.js')) === 'kapsowhatsapp.js';
+            return substr($path, -strlen('/js/kapsowhatsapp.js')) === '/js/kapsowhatsapp.js';
         });
 
-        $this->assertNotEmpty($matches, 'the javascripts filter must ship kapsowhatsapp.js');
+        $this->assertNotEmpty($matches, 'the javascripts filter must ship kapsowhatsapp.js as a bare path');
         $this->assertFileExists(__DIR__.'/../../Public/js/kapsowhatsapp.js');
+    }
+
+    public function test_the_module_css_is_registered_and_shipped()
+    {
+        $stylesheets = \Eventy::filter('stylesheets', []);
+
+        $matches = array_filter($stylesheets, function ($path) {
+            return substr($path, -strlen('/css/kapsowhatsapp.css')) === '/css/kapsowhatsapp.css';
+        });
+
+        $this->assertNotEmpty($matches, 'the stylesheets filter must ship kapsowhatsapp.css as a bare path');
+        $this->assertFileExists(__DIR__.'/../../Public/css/kapsowhatsapp.css');
     }
 
     /**

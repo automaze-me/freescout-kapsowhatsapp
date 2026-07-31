@@ -122,13 +122,16 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // owns the whole block.
         \Eventy::addAction('conversation.after_subject', function ($conversation, $mailbox) {
             if ($conversation->isInChatMode()) {
-                self::renderWindowBanner($conversation);
+                // inline: this placement sits in the subject row, directly
+                // after the floated Chat Mode / channel-pill tags -- the
+                // partial aligns the open-state hint with them.
+                self::renderWindowBanner($conversation, true);
             }
         }, 20, 2);
 
         \Eventy::addAction('conversation.after_subject_block', function ($conversation, $mailbox) {
             if (!$conversation->isInChatMode()) {
-                self::renderWindowBanner($conversation);
+                self::renderWindowBanner($conversation, false);
             }
         }, 20, 2);
 
@@ -148,20 +151,40 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         }, 20, 2);
 
         // Ships the module's own JS asset -- on a closed window it disables
-        // the reply triggers client-side (Public/js/kapsowhatsapp.js). See
+        // the reply triggers client-side, and in both window states it
+        // colours the channel pill (Public/js/kapsowhatsapp.js). See
         // "Blocking the editor" in the Stage 3b spec section.
+        // NO ?v= cache-buster on these paths, ever: core feeds this list to
+        // Minify, which stats every entry on disk -- a query string makes
+        // the "file" unfindable, Minify throws, and core swallows the
+        // exception in a way that takes the ENTIRE app JS/CSS bundle down
+        // (verified live: jQuery itself stopped loading). Minify's own
+        // build hash handles cache-busting where bundling is on; where
+        // assets are served individually, browsers revalidate via
+        // ETag/Last-Modified heuristics.
         \Eventy::addFilter('javascripts', function ($javascripts) {
             $javascripts[] = \Module::getPublicPath(KAPSO_WHATSAPP_MODULE).'/js/kapsowhatsapp.js';
 
             return $javascripts;
+        }, 20, 1);
+
+        // The pill-colour classes the JS above applies
+        // (Public/css/kapsowhatsapp.css).
+        \Eventy::addFilter('stylesheets', function ($stylesheets) {
+            $stylesheets[] = \Module::getPublicPath(KAPSO_WHATSAPP_MODULE).'/css/kapsowhatsapp.css';
+
+            return $stylesheets;
         }, 20, 1);
     }
 
     /**
      * Shared by both the after_subject (chat mode) and after_subject_block
      * (normal mode) hooks above -- identical rendering, different gate.
+     * $inline tells the partial whether it is rendering inside the subject
+     * row (chat mode) and must align the open-state hint with the floated
+     * pills there, or standing in its own row (normal mode).
      */
-    protected static function renderWindowBanner($conversation)
+    protected static function renderWindowBanner($conversation, $inline = false)
     {
         $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
 
@@ -169,6 +192,6 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             return;
         }
 
-        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state])->render();
+        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline])->render();
     }
 }

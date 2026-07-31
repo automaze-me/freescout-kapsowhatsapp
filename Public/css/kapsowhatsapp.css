@@ -1,0 +1,15 @@
+/**
+ * Window-state colours for the channel pill. The pill itself is core
+ * markup (resources/views/conversations/view.blade.php, the
+ * .fs-tag.fs-tag-md span next to the Chat Mode button) -- core exposes no
+ * server-side hook on its styling, so js/kapsowhatsapp.js applies these
+ * classes client-side based on the window banner's data markers. Green is
+ * core's own .fs-tag-green (#52ad67, public/css/style.css); red is the
+ * Bootstrap 3 danger tone core uses elsewhere.
+ */
+.fs-tag.kwa-window-pill-open {
+    background-color: #52ad67;
+}
+.fs-tag.kwa-window-pill-closed {
+    background-color: #d9534f;
+}
