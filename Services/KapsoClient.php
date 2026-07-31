@@ -574,7 +574,18 @@ class KapsoClient
 
         switch ($status) {
             case 401:
+                return __('Kapso rejected the API key. Enter a valid Kapso API key on the WhatsApp Accounts page.');
             case 403:
+                // A 403 carrying Kapso's own explanation must surface it --
+                // e.g. "Sandbox WhatsApp configurations only support
+                // messaging endpoints" on the template list, found live:
+                // the old blanket key message sent the admin to re-enter a
+                // key that was perfectly valid. A bare 403 still reads as a
+                // key/permission problem.
+                if ($detail) {
+                    return __('Kapso refused the request: :error', ['error' => $detail]);
+                }
+
                 return __('Kapso rejected the API key. Enter a valid Kapso API key on the WhatsApp Accounts page.');
             case 404:
                 return __('Kapso does not recognise this Phone Number ID for the project this API key belongs to. Check the Phone Number ID and the API key.');

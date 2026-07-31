@@ -224,6 +224,31 @@ class TemplateListTest extends TestCase
         $this->assertSame([], $client->listMessageTemplates());
     }
 
+    /**
+     * Found live (2026-07-31): Kapso answers the template list with
+     * 403 {"error": "Sandbox WhatsApp configurations only support messaging
+     * endpoints"} for sandbox projects. The old blanket 401/403 mapping
+     * rendered that as "Kapso rejected the API key" -- pointing the admin
+     * at a key that was perfectly valid. A 403 WITH Kapso's own explanation
+     * must surface that explanation; only a bare 403 may fall back to the
+     * key message.
+     */
+    public function test_a_403_with_kapso_detail_surfaces_the_detail_not_the_key_message()
+    {
+        $this->fakeResponses([
+            new Response(403, [], json_encode(['error' => 'Sandbox WhatsApp configurations only support messaging endpoints'])),
+        ]);
+
+        try {
+            (new KapsoClient($this->account()))->listMessageTemplates();
+            $this->fail('Expected KapsoApiException');
+        } catch (KapsoApiException $e) {
+            $this->assertSame(403, $e->getHttpStatus());
+            $this->assertStringContainsString('Sandbox WhatsApp configurations', $e->getMessage());
+            $this->assertStringNotContainsString('API key', $e->getMessage());
+        }
+    }
+
     public function test_an_api_error_surfaces_as_the_client_exception()
     {
         $this->fakeResponses([
