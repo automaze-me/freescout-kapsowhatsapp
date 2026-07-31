@@ -66,6 +66,34 @@ class ReconcileOutboundTest extends TestCase
         ];
     }
 
+    /**
+     * A foreign media send (e.g. an image sent from Kapso's own inbox, or
+     * the n8n bridge) with no caption: Kapso's `kapso.content` for this
+     * shape is its human-readable description ending in a *temporary,
+     * signed* URL -- MessageBody::extract() must never surface that as the
+     * recorded thread's body, the same rule as for inbound media.
+     */
+    protected function mediaSentPayload(string $wamid): array
+    {
+        return [
+            'message' => [
+                'id' => $wamid, 'type' => 'image', 'to' => '4915166666666',
+                'image' => ['id' => 'media_foreign'],
+                'kapso' => [
+                    'direction'  => 'outbound',
+                    'status'     => 'sent',
+                    'has_media'  => true,
+                    'content'    => 'Image attached (photo.jpg) [Size: 117.4 KB | Type: image/jpeg] URL: https://app.kapso.ai/rails/active_storage/blobs/redirect/xyz',
+                ],
+            ],
+            'conversation' => [
+                'id' => 'conv_echo', 'phone_number_id' => '123456789012345',
+                'kapso' => ['contact_name' => 'Echo Tester'],
+            ],
+            'phone_number_id' => '123456789012345',
+        ];
+    }
+
     protected function failedPayload(string $wamid): array
     {
         $payload = $this->sentPayload($wamid);
@@ -149,6 +177,28 @@ class ReconcileOutboundTest extends TestCase
         // marker's actual appearance for the case this guards against).
         $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),
             'a foreign send must never get the sent-marker meta');
+    }
+
+    public function test_a_foreign_media_send_body_is_never_the_kapso_url()
+    {
+        $account = $this->makeAccount();
+        $this->seedInbound($account);
+
+        $conversationId = KapsoMessage::where('wamid', 'wamid.seed')->value('conversation_id');
+        $threadsBefore  = Thread::where('conversation_id', $conversationId)->count();
+
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->mediaSentPayload('wamid.foreign-media')))->handle();
+
+        $this->assertSame($threadsBefore + 1, Thread::where('conversation_id', $conversationId)->count());
+        $this->assertTrue(KapsoMessage::seen('wamid.foreign-media'));
+
+        $thread = Thread::where('conversation_id', $conversationId)->orderBy('id', 'desc')->first();
+        $this->assertStringNotContainsString('http', $thread->body);
+        $this->assertStringNotContainsString('kapso', $thread->body);
+        $this->assertStringContainsString(
+            __('WhatsApp message: :type', ['type' => 'image']),
+            $thread->body
+        );
     }
 
     public function test_a_failed_send_is_surfaced_on_the_conversation()
