@@ -108,8 +108,9 @@ WhatsApp only allows free-form replies within 24 hours of the customer's last me
 that window, only pre-approved templates go through (template sending is not yet supported by
 this module). Every WhatsApp conversation shows where it stands, above the reply area: a quiet line
 saying when the window closes while it's open, or a red notice saying when it closed once it
-isn't. On a closed window the reply button is disabled — notes are unaffected and stay fully
-available, since they never leave FreeScout.
+isn't. On a closed window the Reply button is removed entirely and an already-open draft cannot be
+reopened back into the editor — notes are unaffected and stay fully available, since they never
+leave FreeScout.
 
 The window is tracked per WhatsApp contact, not per conversation: a customer's message on any of
 their conversations reopens it everywhere, and the banner reflects that on the next page load (no

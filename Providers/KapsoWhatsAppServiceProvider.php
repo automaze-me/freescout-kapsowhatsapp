@@ -104,23 +104,47 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         }, 20, 1);
 
         // Stage 3b: the 24h customer-service window banner, above the
-        // reply/note editor. Core fires this action as
-        // @action('conversation.after_subject_block', $conversation,
-        // $mailbox) (resources/views/conversations/view.blade.php:231), in
-        // both normal and chat-mode rendering. WindowState returns null for
-        // non-WhatsApp conversations and for a WhatsApp conversation that
-        // has never had an inbound message, in which case nothing is
-        // rendered -- other modules (e.g. Checklists) already use this same
-        // hook, so this must stay silent rather than assume it owns the
-        // whole block.
+        // reply/note editor. Placement depends on chat vs. normal mode: in
+        // chat mode, core collapses conversation.after_subject_block's
+        // output inside the #conv-top-blocks accordion
+        // (view.blade.php:229-234), which is not shown by default --
+        // rendering the banner there would be effectively invisible.
+        // conversation.after_subject (view.blade.php:207), by contrast,
+        // renders above that collapse in every mode, so chat mode renders
+        // there instead; normal mode keeps the original after_subject_block
+        // placement. Each hook checks $conversation->isInChatMode() itself
+        // and renders only on its own side, so exactly one echoes per
+        // request -- never both. WindowState returns null for non-WhatsApp
+        // conversations and for a WhatsApp conversation that has never had
+        // an inbound message, in which case nothing is rendered -- other
+        // modules (e.g. Checklists, CustomFields, Tags) already use these
+        // same two hooks, so this must stay silent rather than assume it
+        // owns the whole block.
+        \Eventy::addAction('conversation.after_subject', function ($conversation, $mailbox) {
+            if ($conversation->isInChatMode()) {
+                self::renderWindowBanner($conversation);
+            }
+        }, 20, 2);
+
         \Eventy::addAction('conversation.after_subject_block', function ($conversation, $mailbox) {
+            if (!$conversation->isInChatMode()) {
+                self::renderWindowBanner($conversation);
+            }
+        }, 20, 2);
+
+        // C1: the Reply button must not exist at all when the window is
+        // closed, not merely be disabled client-side -- with no
+        // `.conv-reply` in the DOM, the toolbar shows no dead button and
+        // chat mode's own auto-open (public/js/main.js:1354
+        // `$(".conv-reply").click()`) simply no-ops. This is core's own
+        // permission filter for the button
+        // (app/Misc/ConversationActionButtons.php:25); the module JS below
+        // becomes belt-and-braces for whatever this filter cannot reach
+        // (e.g. an already-rendered page).
+        \Eventy::addFilter('conversation.reply_button.enabled', function ($enabled, $conversation) {
             $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
 
-            if (!$state) {
-                return;
-            }
-
-            echo view('kapsowhatsapp::partials/window_banner', ['state' => $state])->render();
+            return ($state && !$state['open']) ? false : $enabled;
         }, 20, 2);
 
         // Ships the module's own JS asset -- on a closed window it disables
@@ -131,5 +155,20 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
 
             return $javascripts;
         }, 20, 1);
+    }
+
+    /**
+     * Shared by both the after_subject (chat mode) and after_subject_block
+     * (normal mode) hooks above -- identical rendering, different gate.
+     */
+    protected static function renderWindowBanner($conversation)
+    {
+        $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
+
+        if (!$state) {
+            return;
+        }
+
+        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state])->render();
     }
 }

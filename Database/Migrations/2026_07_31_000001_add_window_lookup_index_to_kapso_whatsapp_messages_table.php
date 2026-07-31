@@ -6,9 +6,17 @@ use Illuminate\Support\Facades\Schema;
 
 /**
  * Supports WindowState::forConversation()'s per-contact lookup: for a given
- * (account_id, contact_phone) pair, find the most recent inbound row. The
- * index name is given explicitly rather than left to Laravel's
- * auto-generated `kapso_whatsapp_messages_account_id_contact_phone_created_at_index`,
+ * (account_id, contact_phone) pair, find the most recent *inbound* row.
+ * `direction` is part of the index (not just account_id/contact_phone/
+ * created_at) because the lookup query always filters on
+ * `direction = 'inbound'` as well
+ * (Services/WindowState.php::compute()) -- without it in the index, MySQL
+ * can use the index to narrow down to the (account, contact) pair and its
+ * created_at ordering, but would still have to fall back to filtering out
+ * outbound rows after the fact instead of the index covering the query's
+ * WHERE clause directly. The index name is given explicitly rather than
+ * left to Laravel's auto-generated
+ * `kapso_whatsapp_messages_account_id_contact_phone_direction_created_at_index`,
  * which exceeds MySQL's 64-character identifier cap and would fail at
  * migrate time.
  *
@@ -23,7 +31,7 @@ class AddWindowLookupIndexToKapsoWhatsappMessagesTable extends Migration
     public function up()
     {
         Schema::table('kapso_whatsapp_messages', function (Blueprint $table) {
-            $table->index(['account_id', 'contact_phone', 'created_at'], self::INDEX_NAME);
+            $table->index(['account_id', 'contact_phone', 'direction', 'created_at'], self::INDEX_NAME);
         });
     }
 

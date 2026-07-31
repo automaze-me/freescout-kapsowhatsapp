@@ -205,4 +205,36 @@ class WindowStateTest extends TestCase
         $this->assertNotNull($state);
         $this->assertFalse($state['open']);
     }
+
+    /**
+     * Stage 3b fix wave: forConversation() is now memoized per conversation
+     * id (it runs once for the reply-button filter and once more for the
+     * banner, on the same request), so a second call for the same
+     * conversation is served from the cache rather than a fresh query. Core's
+     * own date helpers (\App\User::dateDiffForHumans() / ::dateFormat(), as
+     * used by the window banner partial) call ->setTimezone() on the Carbon
+     * instance they're given, mutating it in place -- exactly what this test
+     * reproduces on the first result. That mutation must never leak into
+     * whatever a later call for the same conversation hands back.
+     */
+    public function test_a_callers_mutation_of_last_inbound_at_does_not_corrupt_the_memoized_state()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $createdAt    = now()->subHours(1)->startOfSecond();
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, $createdAt);
+
+        $first            = WindowState::forConversation($conversation);
+        $expectedClosesAt = $createdAt->copy()->addHours(WindowState::WINDOW_HOURS);
+        $originalTimezone = $first['last_inbound_at']->timezone->getName();
+
+        $first['last_inbound_at']->setTimezone('Pacific/Auckland');
+
+        $second = WindowState::forConversation($conversation);
+
+        $this->assertTrue($createdAt->eq($second['last_inbound_at']), 'last_inbound_at must be unaffected by the earlier mutation');
+        $this->assertSame($originalTimezone, $second['last_inbound_at']->timezone->getName(), 'the mutation of the first result leaked its timezone into the memoized state');
+        $this->assertTrue($expectedClosesAt->eq($second['closes_at']), 'closes_at must be unaffected by the earlier mutation');
+    }
 }

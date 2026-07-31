@@ -92,6 +92,54 @@ class WindowBannerTest extends TestCase
         return (string) ob_get_clean();
     }
 
+    /**
+     * Fires the `conversation.after_subject` action exactly the way
+     * resources/views/conversations/view.blade.php:207 does
+     * (@action('conversation.after_subject', $conversation, $mailbox)) --
+     * the chat-mode placement of the Stage 3b banner. Same hook-level
+     * capture convention as renderBanner() above.
+     */
+    protected function renderAfterSubject($conversation, $mailbox): string
+    {
+        ob_start();
+        \Eventy::action('conversation.after_subject', $conversation, $mailbox);
+
+        return (string) ob_get_clean();
+    }
+
+    /**
+     * Conversation::isInChatMode() (app/Conversation.php:2521) reads three
+     * things: $this->isChat() (already true -- makeConversation() above
+     * always creates TYPE_CHAT conversations), \Helper::isChatMode() (a
+     * session flag, \Session::get('chat_mode', 0), toggled here via
+     * \Helper::setChatMode()), and \Route::is('conversations.view') -- the
+     * *router's* currently-matched route (Router::$current), not the
+     * request URL or request()->route(). This suite never makes a real HTTP
+     * request against conversations.view (this module's convention -- see
+     * renderBanner()'s docblock -- is hook-level \Eventy::action() calls, not
+     * page GETs), so there is no request for the router to have matched and
+     * Route::is() would otherwise always read false here.
+     *
+     * Router::$current is protected and only ever written by the router's
+     * own (also protected) findRoute(), normally invoked mid-dispatch. There
+     * is no public setter. A bound closure, scoped to the Router instance,
+     * is the minimal way to set that one property directly -- using the
+     * framework's real object, not a Mockery facade mock (this module's
+     * tests avoid those) -- without executing routing/middleware/controller
+     * machinery (auth, view rendering, summernote assets, ...) at all. The
+     * route itself comes from RouteCollection::getByName(), the same public
+     * lookup `route('conversations.view', ...)` performs.
+     */
+    protected function setMatchedRouteName(?string $name): void
+    {
+        $router = app('router');
+        $route  = $name ? $router->getRoutes()->getByName($name) : null;
+
+        \Closure::bind(function () use ($route) {
+            $this->current = $route;
+        }, $router, $router)();
+    }
+
     public function test_a_closed_window_renders_the_blocking_banner()
     {
         $account      = $this->makeAccount();
@@ -140,5 +188,76 @@ class WindowBannerTest extends TestCase
 
         $this->assertNotEmpty($matches, 'the javascripts filter must ship kapsowhatsapp.js');
         $this->assertFileExists(__DIR__.'/../../Public/js/kapsowhatsapp.js');
+    }
+
+    /**
+     * C1 (Critical): core's own conversation.reply_button.enabled filter
+     * (app/Misc/ConversationActionButtons.php:25,
+     * \Eventy::filter('conversation.reply_button.enabled', true,
+     * $conversation)) is the real fix -- with no `.conv-reply` in the DOM,
+     * the toolbar shows no dead button and chat mode's auto-open
+     * (public/js/main.js:1354 `$(".conv-reply").click()`) simply no-ops.
+     */
+    public function test_the_reply_button_is_removed_when_the_window_is_closed()
+    {
+        $account = $this->makeAccount();
+
+        // Deliberately different contact phones for $closed and $open:
+        // WindowState is keyed per (account, contact), not per conversation
+        // (WindowStateTest::test_the_window_is_keyed_per_contact_not_per_conversation
+        // pins this) -- sharing one phone across both would let $open's
+        // recent inbound message reopen $closed's window too.
+        $closed = $this->makeConversation($account);
+        $this->seedMessage($account, $closed, '+491771111111', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $open = $this->makeConversation($account);
+        $this->seedMessage($account, $open, '+491772222222', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+
+        $other = $this->makeConversation($account, 1);
+
+        $this->assertFalse(\Eventy::filter('conversation.reply_button.enabled', true, $closed), 'a closed window must remove the reply button');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $open), 'an open window must leave the reply button alone');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $other), 'a non-WhatsApp conversation must pass the filter through untouched');
+    }
+
+    /**
+     * C1: in chat mode, core collapses conversation.after_subject_block's
+     * output inside the #conv-top-blocks accordion
+     * (view.blade.php:229-234), which is not shown by default -- a banner
+     * rendered there would be effectively invisible. conversation.after_subject
+     * (view.blade.php:207), by contrast, renders above that collapse in
+     * every mode. So chat mode must render the banner on after_subject and
+     * stay silent on after_subject_block; normal mode is the exact inverse.
+     * Marker-based negatives ('kwa-window-status') rather than "output is
+     * empty": Tags (after_subject) and Checklists/CustomFields
+     * (after_subject_block) share both hooks and may render their own
+     * content.
+     */
+    public function test_the_banner_moves_above_the_collapse_in_chat_mode_and_stays_below_it_in_normal_mode()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        \Helper::setChatMode(true);
+        $this->setMatchedRouteName('conversations.view');
+        $this->assertTrue($conversation->isInChatMode(), 'test setup must actually satisfy isInChatMode()');
+
+        $afterSubject      = $this->renderAfterSubject($conversation, $account->mailbox);
+        $afterSubjectBlock = $this->renderBanner($conversation, $account->mailbox);
+
+        $this->assertStringContainsString('kwa-window-status', $afterSubject, 'chat mode must render the banner on after_subject');
+        $this->assertStringNotContainsString('kwa-window-status', $afterSubjectBlock, 'chat mode must not also render the banner on after_subject_block');
+
+        \Helper::setChatMode(false);
+        $this->setMatchedRouteName(null);
+        $this->assertFalse($conversation->isInChatMode(), 'test setup must actually leave chat mode');
+
+        $afterSubjectNormal      = $this->renderAfterSubject($conversation, $account->mailbox);
+        $afterSubjectBlockNormal = $this->renderBanner($conversation, $account->mailbox);
+
+        $this->assertStringNotContainsString('kwa-window-status', $afterSubjectNormal, 'normal mode must not render the banner on after_subject');
+        $this->assertStringContainsString('kwa-window-status', $afterSubjectBlockNormal, 'normal mode must keep rendering the banner on after_subject_block');
     }
 }
