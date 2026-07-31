@@ -271,7 +271,10 @@ class SendReplyMessage implements ShouldQueue
         // exactly equivalent to an empty one (no body parts, attachments
         // still sent).
         $text        = trim(\Helper::htmlToText((string) $thread->body));
-        $attachments = $thread->attachments;
+        // Explicit order: core's attachments() relation carries no orderBy,
+        // and which attachment gets the caption (first one) must not depend
+        // on whatever row order the DB happens to return.
+        $attachments = $thread->attachments()->orderBy('id')->get();
 
         $caption = null;
 
