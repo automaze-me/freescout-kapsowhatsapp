@@ -240,6 +240,49 @@ class WindowBannerTest extends TestCase
     }
 
     /**
+     * Task 3 of Stage 3c: the closed notice gains the "Send a template…"
+     * control plus the three data attributes the picker JS reads
+     * (Public/js/kapsowhatsapp.js) -- the endpoint URLs and the CSRF token,
+     * all server-rendered so the JS needs no route-building or translation
+     * of its own.
+     */
+    public function test_the_closed_banner_carries_the_template_picker_control()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $html = $this->renderBanner($conversation, $account->mailbox);
+
+        $this->assertStringContainsString('data-kwa-templates-url', $html);
+        $this->assertStringContainsString('data-kwa-send-url', $html);
+        $this->assertStringContainsString('data-kwa-csrf', $html);
+        $this->assertStringContainsString('kwa-send-template-btn', $html);
+        $this->assertStringContainsString('Send a template', $html);
+    }
+
+    /**
+     * Mutually exclusive with the closed banner's control -- an open window
+     * has nothing to send a template past, and the picker markup must not
+     * be shipped where the button that opens it does not exist either.
+     */
+    public function test_the_open_banner_carries_no_template_picker_control()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+
+        $html = $this->renderBanner($conversation, $account->mailbox);
+
+        $this->assertStringNotContainsString('data-kwa-templates-url', $html);
+        $this->assertStringNotContainsString('data-kwa-send-url', $html);
+        $this->assertStringNotContainsString('data-kwa-csrf', $html);
+        $this->assertStringNotContainsString('kwa-send-template-btn', $html);
+    }
+
+    /**
      * C1: in chat mode, core collapses conversation.after_subject_block's
      * output inside the #conv-top-blocks accordion
      * (view.blade.php:229-234), which is not shown by default -- a banner

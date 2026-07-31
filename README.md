@@ -105,18 +105,35 @@ using Kapso's own inbox directly.
 ## The 24-hour window
 
 WhatsApp only allows free-form replies within 24 hours of the customer's last message; outside
-that window, only pre-approved templates go through (template sending is not yet supported by
-this module). Every WhatsApp conversation shows where it stands, above the reply area: a quiet line
-saying when the window closes while it's open, or a red notice saying when it closed once it
-isn't. On a closed window the Reply button is removed entirely and an already-open draft cannot be
-reopened back into the editor — notes are unaffected and stay fully available, since they never
-leave FreeScout.
+that window, only pre-approved templates go through. Every WhatsApp conversation shows where it
+stands, above the reply area: a quiet line saying when the window closes while it's open, or a red
+notice saying when it closed once it isn't. On a closed window the Reply button is removed
+entirely and an already-open draft cannot be reopened back into the editor — notes are unaffected
+and stay fully available, since they never leave FreeScout.
 
 The window is tracked per WhatsApp contact, not per conversation: a customer's message on any of
 their conversations reopens it everywhere, and the banner reflects that on the next page load (no
 live countdown). This is advisory UI only — WhatsApp remains the actual enforcer. A page left open
 across the window's expiry can still attempt to send; that attempt fails at delivery exactly as
 described above, honestly, as a red delivery-failure line item.
+
+### Sending a template on a closed window
+
+The red closed-window notice carries a **Send a template…** button. It opens a small form listing
+the Kapso project's currently approved templates (name and language), a preview of the template
+text, and one input for each `{{n}}` placeholder the template needs. Only templates Kapso reports
+as `APPROVED`, with a plain text body and no other parameterised part (no media header, no dynamic
+button), are offered — this is the same slice of templates the send path can actually fill; the
+template list is fetched fresh from Kapso every time the picker opens, never cached.
+
+Sending fills in the placeholders and immediately shows the message in the conversation, attributed
+to the agent who sent it. It is delivered to WhatsApp the same way an ordinary reply is: once Kapso
+confirms the send it is marked *Sent via WhatsApp*, and a rejected or failed send surfaces as the
+same red delivery-failure line item described above. Sending a template does **not** reopen the
+24-hour window — only a reply from the customer does that, exactly as WhatsApp's own rules require.
+
+Any agent who can reply to the conversation can send a template on it — this is not restricted to
+admins.
 
 ## Channel code
 

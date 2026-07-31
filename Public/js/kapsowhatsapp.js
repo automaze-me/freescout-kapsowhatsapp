@@ -50,6 +50,231 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Stage 3c: the "Send a template…" picker on the closed-window notice.
+    // Guarded on the presence of data-kwa-templates-url itself, not the
+    // `closed` flag above -- the same marker-driven style as the
+    // pill-colouring block: only the closed banner
+    // (Resources/views/partials/window_banner.blade.php) ever carries this
+    // attribute, so this is simply a no-op on an open-window page.
+    Array.prototype.slice.call(document.querySelectorAll('[data-kwa-templates-url]')).forEach(function (notice) {
+        var toggle = notice.querySelector('.kwa-send-template-btn');
+        if (!toggle) {
+            return;
+        }
+
+        // All picker chrome text is pre-translated server-side into these
+        // attributes (see the partial's docblock) -- this file has no
+        // client-side translation lookup of its own.
+        var labels = {
+            send:    notice.getAttribute('data-kwa-label-send') || 'Send',
+            cancel:  notice.getAttribute('data-kwa-label-cancel') || 'Cancel',
+            loading: notice.getAttribute('data-kwa-label-loading') || '',
+            none:    notice.getAttribute('data-kwa-label-none') || '',
+            error:   notice.getAttribute('data-kwa-label-error') || '',
+            value:   notice.getAttribute('data-kwa-label-value') || 'Value'
+        };
+
+        var picker = null;
+
+        toggle.addEventListener('click', function () {
+            // A second click while the picker is open collapses it again,
+            // whatever state it is in (still loading, showing the form, or
+            // showing an error) -- same toggle idiom as the reply/note
+            // buttons elsewhere in core's own main.js.
+            if (picker) {
+                if (picker.parentNode) {
+                    picker.parentNode.removeChild(picker);
+                }
+                picker = null;
+                return;
+            }
+
+            var thisPicker = document.createElement('div');
+            thisPicker.className = 'kwa-template-picker';
+            thisPicker.textContent = labels.loading;
+            notice.appendChild(thisPicker);
+            picker = thisPicker;
+
+            kwaFetchJson('GET', notice.getAttribute('data-kwa-templates-url'), null, null, function (failed, data) {
+                // The picker may have been collapsed (or re-opened, creating
+                // a new one) while this request was in flight.
+                if (picker !== thisPicker) {
+                    return;
+                }
+
+                kwaRenderTemplatePicker(thisPicker, notice, labels, data, failed);
+            });
+        });
+    });
+
+    // XMLHttpRequest, not fetch(): this file's own convention (see the file
+    // docblock) is vanilla JS with no IE11-breaking syntax or APIs, and
+    // fetch()/Promise have no IE11 fallback here to lean on. $body is JSON
+    // string|null; a non-null body sends the CSRF header Laravel's
+    // VerifyCsrfToken middleware requires for a same-origin POST
+    // (core's own main.js does the equivalent via a jQuery ajax header).
+    function kwaFetchJson(method, url, body, csrfToken, callback) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, url, true);
+        xhr.setRequestHeader('Accept', 'application/json');
+        if (body !== null) {
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.setRequestHeader('X-CSRF-TOKEN', csrfToken || '');
+        }
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) {
+                return;
+            }
+            var data = null;
+            try {
+                data = JSON.parse(xhr.responseText);
+            } catch (e) {
+                data = null;
+            }
+            callback(xhr.status < 200 || xhr.status >= 300 || !data, data);
+        };
+        xhr.onerror = function () {
+            callback(true, null);
+        };
+        xhr.send(body !== null ? body : undefined);
+    }
+
+    function kwaStatusNode(text, isError) {
+        var node = document.createElement('div');
+        node.className = isError ? 'kwa-template-status text-danger' : 'kwa-template-status text-muted';
+        node.textContent = text;
+        return node;
+    }
+
+    // Renders the picker's contents once the template list has loaded (or
+    // failed to). $data is the endpoint's decoded JSON body (or null on a
+    // transport-level failure); {error: ...} is Kapso's own honest failure
+    // (see TemplatesController::list()), always shown verbatim -- it is
+    // already a translated, server-composed string, never a stack trace.
+    function kwaRenderTemplatePicker(picker, notice, labels, data, loadFailed) {
+        picker.innerHTML = '';
+
+        if (loadFailed || !data) {
+            picker.appendChild(kwaStatusNode(labels.error, true));
+            return;
+        }
+
+        if (data.error) {
+            picker.appendChild(kwaStatusNode(data.error, true));
+            return;
+        }
+
+        var templates = data.templates || [];
+
+        if (!templates.length) {
+            picker.appendChild(kwaStatusNode(labels.none, false));
+            return;
+        }
+
+        var select = document.createElement('select');
+        select.className = 'form-control input-sm kwa-template-select';
+        for (var i = 0; i < templates.length; i++) {
+            var option = document.createElement('option');
+            option.value = String(i);
+            option.textContent = templates[i].name + ' — ' + templates[i].language;
+            select.appendChild(option);
+        }
+        picker.appendChild(select);
+
+        var preview = document.createElement('div');
+        preview.className = 'kwa-template-preview';
+        picker.appendChild(preview);
+
+        var varsContainer = document.createElement('div');
+        varsContainer.className = 'kwa-template-vars';
+        picker.appendChild(varsContainer);
+
+        var status = document.createElement('div');
+        status.className = 'kwa-template-status text-danger';
+        picker.appendChild(status);
+
+        var actions = document.createElement('div');
+        actions.className = 'kwa-template-actions';
+
+        var sendBtn = document.createElement('button');
+        sendBtn.type = 'button';
+        sendBtn.className = 'btn btn-primary btn-xs';
+        sendBtn.textContent = labels.send;
+        actions.appendChild(sendBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-link btn-xs';
+        cancelBtn.textContent = labels.cancel;
+        actions.appendChild(cancelBtn);
+
+        picker.appendChild(actions);
+
+        var renderSelected = function () {
+            var template = templates[Number(select.value)];
+            preview.textContent = template.body;
+
+            varsContainer.innerHTML = '';
+            for (var v = 1; v <= template.variables; v++) {
+                var wrapper = document.createElement('div');
+                wrapper.className = 'form-group kwa-template-var';
+
+                var label = document.createElement('label');
+                label.textContent = labels.value + ' ' + v;
+
+                var input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'form-control input-sm kwa-template-var-input';
+                input.maxLength = 1024;
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(input);
+                varsContainer.appendChild(wrapper);
+            }
+        };
+
+        select.addEventListener('change', renderSelected);
+        renderSelected();
+
+        cancelBtn.addEventListener('click', function () {
+            if (picker.parentNode) {
+                picker.parentNode.removeChild(picker);
+            }
+        });
+
+        sendBtn.addEventListener('click', function () {
+            var template  = templates[Number(select.value)];
+            var inputs    = Array.prototype.slice.call(varsContainer.querySelectorAll('.kwa-template-var-input'));
+            var variables = inputs.map(function (input) {
+                return input.value;
+            });
+
+            status.textContent = '';
+            sendBtn.disabled = true;
+
+            var payload = JSON.stringify({
+                name:      template.name,
+                language:  template.language,
+                variables: variables
+            });
+
+            kwaFetchJson('POST', notice.getAttribute('data-kwa-send-url'), payload, notice.getAttribute('data-kwa-csrf'), function (failed, response) {
+                if (!failed && response && response.thread_id) {
+                    // The new thread and every state change (preview,
+                    // last-reply fields) render server-side -- a reload is
+                    // the cheap, honest way to show them, the same choice
+                    // this module makes rather than duplicating server
+                    // rendering logic in JS.
+                    window.location.reload();
+                    return;
+                }
+
+                sendBtn.disabled = false;
+                status.textContent = (response && response.error) ? response.error : labels.error;
+            });
+        });
+    }
+
     if (!closed) {
         return;
     }

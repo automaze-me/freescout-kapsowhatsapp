@@ -32,4 +32,15 @@ Route::group([
     Route::post('/kapso-whatsapp/{id}/webhook/register', 'KapsoWhatsAppController@registerWebhook')->name('kapsowhatsapp.webhook.register')->where('id', '[0-9]+');
     Route::post('/kapso-whatsapp/{id}/webhook/refresh', 'KapsoWhatsAppController@refreshWebhook')->name('kapsowhatsapp.webhook.refresh')->where('id', '[0-9]+');
     Route::post('/kapso-whatsapp/{id}/webhook/resume', 'KapsoWhatsAppController@resumeWebhook')->name('kapsowhatsapp.webhook.resume')->where('id', '[0-9]+');
+
+    // Stage 3c: the closed-window "Send a template…" picker's transport.
+    // Deliberately NOT marked 'laroute' -- the picker reads these URLs off
+    // data attributes the banner partial renders server-side
+    // (route(...)/csrf_token()), so no laroute.js rebuild is needed for
+    // this feature. Authorisation is per-conversation, not admin-only --
+    // see TemplatesController::resolveConversation() -- so these two stay
+    // in this same 'web','auth' group rather than gaining their own
+    // authorizeAdmin() gate the way every other route above does.
+    Route::get('/kapso-whatsapp/templates/{conversation_id}', 'TemplatesController@list')->name('kapsowhatsapp.templates.list')->where('conversation_id', '[0-9]+');
+    Route::post('/kapso-whatsapp/templates/{conversation_id}', 'TemplatesController@send')->name('kapsowhatsapp.templates.send')->where('conversation_id', '[0-9]+');
 });

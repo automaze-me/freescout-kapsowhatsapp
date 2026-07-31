@@ -192,6 +192,8 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             return;
         }
 
-        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline])->render();
+        // $conversation is passed through so the closed branch can build its
+        // "Send a template…" picker URLs (Stage 3c) via route(...).
+        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline, 'conversation' => $conversation])->render();
     }
 }

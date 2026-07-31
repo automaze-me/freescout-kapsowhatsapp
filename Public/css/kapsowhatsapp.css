@@ -13,3 +13,59 @@
 .fs-tag.kwa-window-pill-closed {
     background-color: #d9534f;
 }
+
+/**
+ * Stage 3c: spacing only for the "Send a template…" picker
+ * (Public/js/kapsowhatsapp.js builds the elements themselves; Bootstrap 3's
+ * own .form-control/.btn/.form-group classes already supply everything
+ * else). The picker sits inside the closed-window .alert-danger box, so its
+ * own text stays readable against that background rather than inheriting
+ * Bootstrap's default (dark-on-white) form control styling assumptions --
+ * only the parts that would otherwise clash (labels, the muted/error status
+ * line) are touched.
+ */
+.kwa-template-picker-toggle {
+    margin-top: 8px;
+}
+
+.kwa-template-picker {
+    margin-top: 10px;
+    max-width: 420px;
+}
+
+.kwa-template-picker .kwa-template-preview {
+    margin-top: 8px;
+    padding: 6px 8px;
+    background-color: rgba(255, 255, 255, 0.6);
+    border-radius: 3px;
+    font-style: italic;
+}
+
+.kwa-template-picker .kwa-template-vars {
+    margin-top: 8px;
+}
+
+.kwa-template-picker .kwa-template-var {
+    margin-bottom: 6px;
+}
+
+.kwa-template-picker .kwa-template-var label {
+    font-weight: normal;
+    margin-bottom: 2px;
+}
+
+.kwa-template-picker .kwa-template-status {
+    margin-top: 6px;
+}
+
+.kwa-template-picker .kwa-template-status.text-danger {
+    color: #843534;
+}
+
+.kwa-template-picker .kwa-template-actions {
+    margin-top: 8px;
+}
+
+.kwa-template-picker .kwa-template-actions .btn + .btn {
+    margin-left: 6px;
+}

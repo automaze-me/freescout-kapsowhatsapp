@@ -43,9 +43,32 @@
         ]) }}
     </div>
 @else
-    <div class="alert alert-danger kwa-window-status" data-kwa-window-closed="1">
+    {{-- Stage 3c: the "Send a template…" picker. The four data-kwa-* URL/
+        token attributes are what Public/js/kapsowhatsapp.js reads to talk to
+        TemplatesController -- rendered server-side (route(...)/csrf_token())
+        so the JS needs no laroute build step and no route knowledge of its
+        own. The data-kwa-label-* attributes are this feature's answer to "no
+        client-side translation infra" (see the Stage 3c spec's "Endpoints &
+        UI transport"): the picker's dynamic chrome (built by JS, since the
+        template list itself is only known after the fetch below) still
+        needs translated strings, so those come from here too, __()'d like
+        every other user-facing string in this module, rather than being
+        hardcoded English in the JS. --}}
+    <div class="alert alert-danger kwa-window-status" data-kwa-window-closed="1"
+         data-kwa-templates-url="{{ route('kapsowhatsapp.templates.list', $conversation->id) }}"
+         data-kwa-send-url="{{ route('kapsowhatsapp.templates.send', $conversation->id) }}"
+         data-kwa-csrf="{{ csrf_token() ?: '' }}"
+         data-kwa-label-send="{{ __('Send') }}"
+         data-kwa-label-cancel="{{ __('Cancel') }}"
+         data-kwa-label-loading="{{ __('Loading templates…') }}"
+         data-kwa-label-none="{{ __('No approved WhatsApp templates are available.') }}"
+         data-kwa-label-error="{{ __('Could not load templates. Please try again.') }}"
+         data-kwa-label-value="{{ __('Value') }}">
         {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
             'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
         ]) }}
+        <div class="kwa-template-picker-toggle">
+            <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
+        </div>
     </div>
 @endif
