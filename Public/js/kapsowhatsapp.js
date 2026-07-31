@@ -66,12 +66,13 @@ document.addEventListener('DOMContentLoaded', function () {
         // attributes (see the partial's docblock) -- this file has no
         // client-side translation lookup of its own.
         var labels = {
-            send:    notice.getAttribute('data-kwa-label-send') || 'Send',
-            cancel:  notice.getAttribute('data-kwa-label-cancel') || 'Cancel',
-            loading: notice.getAttribute('data-kwa-label-loading') || '',
-            none:    notice.getAttribute('data-kwa-label-none') || '',
-            error:   notice.getAttribute('data-kwa-label-error') || '',
-            value:   notice.getAttribute('data-kwa-label-value') || 'Value'
+            send:      notice.getAttribute('data-kwa-label-send') || 'Send',
+            cancel:    notice.getAttribute('data-kwa-label-cancel') || 'Cancel',
+            loading:   notice.getAttribute('data-kwa-label-loading') || '',
+            none:      notice.getAttribute('data-kwa-label-none') || '',
+            error:     notice.getAttribute('data-kwa-label-error') || '',
+            sendError: notice.getAttribute('data-kwa-label-send-error') || '',
+            value:     notice.getAttribute('data-kwa-label-value') || 'Value'
         };
 
         var picker = null;
@@ -102,7 +103,20 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
 
-                kwaRenderTemplatePicker(thisPicker, notice, labels, data, failed);
+                // The onClose callback exists because the render function
+                // cannot reset this closure's `picker` variable itself (its
+                // own first parameter shadows it) -- without the reset, a
+                // Cancel would leave `picker` pointing at the detached div
+                // and the NEXT toggle click would take the collapse branch
+                // above and do nothing.
+                kwaRenderTemplatePicker(thisPicker, notice, labels, data, failed, function () {
+                    if (thisPicker.parentNode) {
+                        thisPicker.parentNode.removeChild(thisPicker);
+                    }
+                    if (picker === thisPicker) {
+                        picker = null;
+                    }
+                });
             });
         });
     });
@@ -115,6 +129,17 @@ document.addEventListener('DOMContentLoaded', function () {
     // (core's own main.js does the equivalent via a jQuery ajax header).
     function kwaFetchJson(method, url, body, csrfToken, callback) {
         var xhr = new XMLHttpRequest();
+        // On a transport failure XHR fires BOTH readystatechange (readyState
+        // 4, status 0) and onerror -- without this guard the callback would
+        // run twice.
+        var done = false;
+        var finish = function (failed, data) {
+            if (done) {
+                return;
+            }
+            done = true;
+            callback(failed, data);
+        };
         xhr.open(method, url, true);
         xhr.setRequestHeader('Accept', 'application/json');
         if (body !== null) {
@@ -131,10 +156,10 @@ document.addEventListener('DOMContentLoaded', function () {
             } catch (e) {
                 data = null;
             }
-            callback(xhr.status < 200 || xhr.status >= 300 || !data, data);
+            finish(xhr.status < 200 || xhr.status >= 300 || !data, data);
         };
         xhr.onerror = function () {
-            callback(true, null);
+            finish(true, null);
         };
         xhr.send(body !== null ? body : undefined);
     }
@@ -151,7 +176,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // transport-level failure); {error: ...} is Kapso's own honest failure
     // (see TemplatesController::list()), always shown verbatim -- it is
     // already a translated, server-composed string, never a stack trace.
-    function kwaRenderTemplatePicker(picker, notice, labels, data, loadFailed) {
+    // $onClose collapses the picker AND resets the toggle's own tracking
+    // variable (which this function cannot reach -- its `picker` parameter
+    // shadows it); the Cancel button must go through it, never remove the
+    // node directly.
+    function kwaRenderTemplatePicker(picker, notice, labels, data, loadFailed, onClose) {
         picker.innerHTML = '';
 
         if (loadFailed || !data) {
@@ -237,9 +266,7 @@ document.addEventListener('DOMContentLoaded', function () {
         renderSelected();
 
         cancelBtn.addEventListener('click', function () {
-            if (picker.parentNode) {
-                picker.parentNode.removeChild(picker);
-            }
+            onClose();
         });
 
         sendBtn.addEventListener('click', function () {
@@ -270,7 +297,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 sendBtn.disabled = false;
-                status.textContent = (response && response.error) ? response.error : labels.error;
+                // labels.sendError, not labels.error -- a send that dies
+                // without a JSON {error} body (419/500, network drop) must
+                // not claim templates "could not be loaded".
+                status.textContent = (response && response.error) ? response.error : labels.sendError;
             });
         });
     }

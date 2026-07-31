@@ -63,6 +63,7 @@
          data-kwa-label-loading="{{ __('Loading templates…') }}"
          data-kwa-label-none="{{ __('No approved WhatsApp templates are available.') }}"
          data-kwa-label-error="{{ __('Could not load templates. Please try again.') }}"
+         data-kwa-label-send-error="{{ __('Could not send the template. Please try again.') }}"
          data-kwa-label-value="{{ __('Value') }}">
         {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
             'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
