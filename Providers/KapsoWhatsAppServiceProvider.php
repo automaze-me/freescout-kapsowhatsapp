@@ -102,5 +102,34 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
                 echo '<div class="thread-meta"><i class="glyphicon glyphicon-ok"></i> '.e(__('Sent via WhatsApp')).'</div>';
             }
         }, 20, 1);
+
+        // Stage 3b: the 24h customer-service window banner, above the
+        // reply/note editor. Core fires this action as
+        // @action('conversation.after_subject_block', $conversation,
+        // $mailbox) (resources/views/conversations/view.blade.php:231), in
+        // both normal and chat-mode rendering. WindowState returns null for
+        // non-WhatsApp conversations and for a WhatsApp conversation that
+        // has never had an inbound message, in which case nothing is
+        // rendered -- other modules (e.g. Checklists) already use this same
+        // hook, so this must stay silent rather than assume it owns the
+        // whole block.
+        \Eventy::addAction('conversation.after_subject_block', function ($conversation, $mailbox) {
+            $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
+
+            if (!$state) {
+                return;
+            }
+
+            echo view('kapsowhatsapp::partials/window_banner', ['state' => $state])->render();
+        }, 20, 2);
+
+        // Ships the module's own JS asset -- on a closed window it disables
+        // the reply triggers client-side (Public/js/kapsowhatsapp.js). See
+        // "Blocking the editor" in the Stage 3b spec section.
+        \Eventy::addFilter('javascripts', function ($javascripts) {
+            $javascripts[] = \Module::getPublicPath(KAPSO_WHATSAPP_MODULE).'/js/kapsowhatsapp.js';
+
+            return $javascripts;
+        }, 20, 1);
     }
 }

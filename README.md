@@ -102,6 +102,21 @@ using Kapso's own inbox directly.
   number against this module's own message history for the account, without regard to whether
   that conversation is currently open or closed.
 
+## The 24-hour window
+
+WhatsApp only allows free-form replies within 24 hours of the customer's last message; outside
+that window, only pre-approved templates go through (template sending is not yet supported by
+this module). Every WhatsApp conversation shows where it stands, above the reply area: a quiet line
+saying when the window closes while it's open, or a red notice saying when it closed once it
+isn't. On a closed window the reply button is disabled — notes are unaffected and stay fully
+available, since they never leave FreeScout.
+
+The window is tracked per WhatsApp contact, not per conversation: a customer's message on any of
+their conversations reopens it everywhere, and the banner reflects that on the next page load (no
+live countdown). This is advisory UI only — WhatsApp remains the actual enforcer. A page left open
+across the window's expiry can still attempt to send; that attempt fails at delivery exactly as
+described above, honestly, as a red delivery-failure line item.
+
 ## Channel code
 
 This module registers communication channel **102**. Codes 100 and 101 are used by the
