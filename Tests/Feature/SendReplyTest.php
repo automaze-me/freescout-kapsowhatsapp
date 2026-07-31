@@ -229,11 +229,183 @@ class SendReplyTest extends TestCase
         $this->assertSame('wamid.OUT1', $row->wamid);
     }
 
+    /**
+     * The default scenario() thread body, "Hello & welcome", is short
+     * enough to ride as a caption (Task: media polish wave, commit 2): with
+     * exactly one attachment on the thread, this reply now goes out as ONE
+     * captioned image message, not a standalone text part followed by a
+     * caption-less image -- so, unlike before this commit, no `wamid.OUT-TEXT`
+     * response is queued at all.
+     */
     public function test_an_attachment_goes_out_as_a_link_with_the_token()
     {
         [$account, $conversation, $inbound, $thread] = $this->scenario();
 
         $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $imageBody = $this->jsonBodyOf(0);
+        $this->assertSame('image', $imageBody['type']);
+        $this->assertStringContainsString('?id=', $imageBody['image']['link']);
+        $this->assertStringContainsString('&token=', $imageBody['image']['link']);
+        $this->assertStringStartsWith(rtrim(config('app.url'), '/'), $imageBody['image']['link']);
+        $this->assertSame('Hello & welcome', $imageBody['image']['caption']);
+
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count(),
+            'the short body rides as the image caption, never a standalone body part');
+
+        $row = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))
+            ->firstOrFail();
+        $this->assertSame($attachment->id, $row->attachment_id);
+        $this->assertSame('wamid.OUT-IMG', $row->wamid);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+    }
+
+    /**
+     * Same caption-mode contract as the image test above, but for a
+     * document: Meta supports captions on both, and the existing `filename`
+     * field must survive alongside it.
+     */
+    public function test_a_non_image_attachment_is_sent_as_a_document_with_filename()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $attachment = Attachment::create('invoice.pdf', 'application/pdf', null, 'fake-pdf-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-DOC']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $docBody = $this->jsonBodyOf(0);
+        $this->assertSame('document', $docBody['type']);
+        $this->assertSame('invoice.pdf', $docBody['document']['filename']);
+        $this->assertStringContainsString('?id=', $docBody['document']['link']);
+        $this->assertSame('Hello & welcome', $docBody['document']['caption']);
+
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count(),
+            'the short body rides as the document caption, never a standalone body part');
+
+        $row = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))
+            ->firstOrFail();
+        $this->assertSame('wamid.OUT-DOC', $row->wamid);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+    }
+
+    /**
+     * The exact whole-payload shape for the caption-mode send this commit
+     * adds: a short reply text (well under MEDIA_CAPTION_LIMIT) plus one
+     * image attachment goes out as a SINGLE WhatsApp message -- the text as
+     * the image's caption -- not two separate messages. This is
+     * WhatsApp-native behaviour for "text + image"; the pre-commit
+     * behaviour sent the text first, then a caption-less image.
+     */
+    public function test_a_short_reply_with_one_image_is_a_single_captioned_message()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $imageBody = $this->jsonBodyOf(0);
+
+        // Whole payload, not just the caption field -- the file's own
+        // convention (see test_a_text_reply_is_sent_and_its_wamid_recorded).
+        // The link is dynamic (embeds the attachment id and an HMAC token),
+        // so it is asserted structurally below and echoed back into this
+        // assertSame() rather than hardcoded.
+        $this->assertSame([
+            'messaging_product' => 'whatsapp',
+            'to'                => '491771234567',
+            'type'              => 'image',
+            'image'             => ['link' => $imageBody['image']['link'], 'caption' => 'Hello & welcome'],
+        ], $imageBody);
+        $this->assertStringContainsString('?id=', $imageBody['image']['link']);
+        $this->assertStringContainsString('&token=', $imageBody['image']['link']);
+
+        // Exactly one send call: the fakeResponses() queue above only has
+        // room for one send + mark-read; a second send attempt would
+        // exhaust the mock queue and throw, failing this test.
+        $this->assertCount(2, $this->history);
+
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
+        $rows = KapsoMessage::where('thread_id', $thread->id)->whereNotNull('part_key')->get();
+        $this->assertCount(1, $rows);
+        $this->assertStringStartsWith('att:', $rows->first()->part_key);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $rows->first()->send_state);
+        $this->assertSame('wamid.OUT-IMG', $rows->first()->wamid);
+    }
+
+    /**
+     * Two attachments: only the FIRST carries the caption. A second
+     * caption on the second attachment would mean the customer sees the
+     * text twice.
+     */
+    public function test_a_short_reply_with_two_attachments_captions_only_the_first()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $attachment1 = Attachment::create('photo1.jpg', 'image/jpeg', null, 'fake-image-bytes-1', null, false, $thread->id, null);
+        $attachment2 = Attachment::create('photo2.jpg', 'image/jpeg', null, 'fake-image-bytes-2', null, false, $thread->id, null);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG1']]])),
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG2']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $firstBody  = $this->jsonBodyOf(0);
+        $secondBody = $this->jsonBodyOf(1);
+
+        $this->assertSame('Hello & welcome', $firstBody['image']['caption']);
+        $this->assertArrayNotHasKey('caption', $secondBody['image']);
+
+        $row1 = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::partKeyForAttachment($attachment1->id))->firstOrFail();
+        $row2 = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::partKeyForAttachment($attachment2->id))->firstOrFail();
+        $this->assertSame('wamid.OUT-IMG1', $row1->wamid);
+        $this->assertSame('wamid.OUT-IMG2', $row2->wamid);
+    }
+
+    /**
+     * MEDIA_CAPTION_LIMIT is 1024; a body one character over it must fall
+     * back to the OLD behaviour (standalone chunked text part(s), then a
+     * caption-less attachment) rather than silently truncating or rejecting
+     * the caption. Uses a multibyte character ('ä', 2 UTF-8 bytes) so a
+     * byte-based length check would disagree with `mb_strlen()` -- the same
+     * discipline as test_a_long_multibyte_reply_is_chunked_on_character_boundaries.
+     */
+    public function test_a_reply_just_over_the_caption_limit_keeps_the_old_two_message_shape()
+    {
+        $longText = str_repeat('ä', 1025);
+        [$account, $conversation, $inbound, $thread] = $this->scenario(['body' => '<p>'.$longText.'</p>']);
+
+        Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
         $thread->has_attachments = true;
         $thread->save();
 
@@ -245,46 +417,21 @@ class SendReplyTest extends TestCase
 
         (new SendReplyMessage($thread->id))->handle();
 
+        $textBody  = $this->jsonBodyOf(0);
         $imageBody = $this->jsonBodyOf(1);
-        $this->assertSame('image', $imageBody['type']);
-        $this->assertStringContainsString('?id=', $imageBody['image']['link']);
-        $this->assertStringContainsString('&token=', $imageBody['image']['link']);
-        $this->assertStringStartsWith(rtrim(config('app.url'), '/'), $imageBody['image']['link']);
 
-        $row = KapsoMessage::where('thread_id', $thread->id)
-            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))
-            ->firstOrFail();
-        $this->assertSame($attachment->id, $row->attachment_id);
-        $this->assertSame('wamid.OUT-IMG', $row->wamid);
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
-    }
+        $this->assertSame(1025, mb_strlen($textBody['text']['body']));
+        $this->assertSame($longText, $textBody['text']['body']);
+        $this->assertArrayNotHasKey('caption', $imageBody['image']);
 
-    public function test_a_non_image_attachment_is_sent_as_a_document_with_filename()
-    {
-        [$account, $conversation, $inbound, $thread] = $this->scenario();
+        $bodyRow = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $attRow  = KapsoMessage::where('thread_id', $thread->id)->where('part_key', '<>', KapsoMessage::PART_BODY)
+            ->whereNotNull('part_key')->firstOrFail();
 
-        $attachment = Attachment::create('invoice.pdf', 'application/pdf', null, 'fake-pdf-bytes', null, false, $thread->id, null);
-        $thread->has_attachments = true;
-        $thread->save();
-
-        $this->fakeResponses([
-            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-TEXT']]])),
-            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-DOC']]])),
-            new Response(200, [], json_encode(['success' => true])),
-        ]);
-
-        (new SendReplyMessage($thread->id))->handle();
-
-        $docBody = $this->jsonBodyOf(1);
-        $this->assertSame('document', $docBody['type']);
-        $this->assertSame('invoice.pdf', $docBody['document']['filename']);
-        $this->assertStringContainsString('?id=', $docBody['document']['link']);
-
-        $row = KapsoMessage::where('thread_id', $thread->id)
-            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))
-            ->firstOrFail();
-        $this->assertSame('wamid.OUT-DOC', $row->wamid);
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $bodyRow->send_state);
+        $this->assertSame('wamid.OUT-TEXT', $bodyRow->wamid);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $attRow->send_state);
+        $this->assertSame('wamid.OUT-IMG', $attRow->wamid);
     }
 
     public function test_a_long_reply_is_chunked_not_doomed()
@@ -389,17 +536,32 @@ class SendReplyTest extends TestCase
         $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count());
     }
 
+    /**
+     * Rewritten for caption mode (media polish wave, commit 2): the
+     * default scenario()'s short body now rides as the FIRST attachment's
+     * caption instead of a standalone `body` part, so a single
+     * text-part-plus-attachment fixture can no longer exercise "one part
+     * accepted, the other failed, only the failed one is retried" -- there
+     * is only one part left once the body folds into the image. Two
+     * attachments restore that shape: the first still carries the caption
+     * (proving caption mode and partial retry compose correctly), the
+     * second is a plain caption-less part whose failure/retry is what this
+     * test is actually about.
+     */
     public function test_a_partial_retry_resends_only_the_unaccepted_part()
     {
         [$account, $conversation, $inbound, $thread] = $this->scenario();
 
-        $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $attachment1 = Attachment::create('photo1.jpg', 'image/jpeg', null, 'fake-image-bytes-1', null, false, $thread->id, null);
+        $attachment2 = Attachment::create('photo2.jpg', 'image/jpeg', null, 'fake-image-bytes-2', null, false, $thread->id, null);
         $thread->has_attachments = true;
         $thread->save();
 
-        // Run 1 (final attempt): text OK, image 500 -> body accepted, att failed + one line item.
+        // Run 1 (final attempt): first image (carrying the caption) OK,
+        // second image 500 -> first accepted, second failed + one line
+        // item. No standalone `body` part exists any more.
         $this->fakeResponses([
-            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-TEXT']]])),
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG1']]])),
             new Response(500, [], json_encode(['error' => 'temporary image relay error'])),
         ]);
 
@@ -407,34 +569,37 @@ class SendReplyTest extends TestCase
         $job1->tries = 1;
         $job1->handle();
 
-        $bodyRow = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
-        $attRow  = KapsoMessage::where('thread_id', $thread->id)
-            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))->firstOrFail();
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
 
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $bodyRow->send_state);
-        $this->assertSame('wamid.OUT-TEXT', $bodyRow->wamid);
-        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $attRow->send_state);
+        $row1 = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment1->id))->firstOrFail();
+        $row2 = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment2->id))->firstOrFail();
+
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row1->send_state);
+        $this->assertSame('wamid.OUT-IMG1', $row1->wamid);
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row2->send_state);
         $this->assertSame(1, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count());
 
-        // Run 2 (a fresh job): only the still-unaccepted attachment part may
-        // hit the network -- an already-accepted body part making a request
-        // here would exhaust this 2-item queue before mark-read and fail
-        // the test.
+        // Run 2 (a fresh job): only the still-unaccepted second attachment
+        // part may hit the network -- an already-accepted first part
+        // making a request here would exhaust this 2-item queue before
+        // mark-read and fail the test.
         $this->fakeResponses([
-            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG']]])),
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT-IMG2']]])),
             new Response(200, [], json_encode(['success' => true])),
         ]);
 
         (new SendReplyMessage($thread->id))->handle();
 
-        $bodyRowAfter = $bodyRow->fresh();
-        $attRowAfter  = $attRow->fresh();
+        $row1After = $row1->fresh();
+        $row2After = $row2->fresh();
 
-        $this->assertSame('wamid.OUT-TEXT', $bodyRowAfter->wamid, 'the already-accepted body part must be untouched');
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $bodyRowAfter->send_state);
+        $this->assertSame('wamid.OUT-IMG1', $row1After->wamid, 'the already-accepted first part must be untouched');
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row1After->send_state);
 
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $attRowAfter->send_state);
-        $this->assertSame('wamid.OUT-IMG', $attRowAfter->wamid);
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row2After->send_state);
+        $this->assertSame('wamid.OUT-IMG2', $row2After->wamid);
     }
 
     /**
@@ -532,6 +697,9 @@ class SendReplyTest extends TestCase
 
         $imageBody = $this->jsonBodyOf(0);
         $this->assertSame('image', $imageBody['type']);
+        // An empty body is not a "short body" -- there is nothing to ride
+        // as a caption, so the image payload must carry no caption key.
+        $this->assertArrayNotHasKey('caption', $imageBody['image']);
     }
 
     /**

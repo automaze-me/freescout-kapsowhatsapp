@@ -365,26 +365,34 @@ class SentMarkerTest extends TestCase
     }
 
     /**
-     * Reviewer I1(b): a two-part reply (text body + image attachment) where
-     * the attachment fails on the job's final attempt --
-     * finalizeFailure() marks that part SEND_STATE_FAILED with status left
-     * NULL (it writes only send_state + error), mirroring
+     * Reviewer I1(b): a two-part reply where the second part fails on the
+     * job's final attempt -- finalizeFailure() marks that part
+     * SEND_STATE_FAILED with status left NULL (it writes only send_state +
+     * error) -- while the first part is already accepted. The first
+     * part's own `sent` webhook must still flip its own row's status, but
+     * must never stamp the marker for a reply that is only partially
+     * delivered.
+     *
+     * Two attachments, not a text body plus one attachment: since the
+     * media polish wave (commit 2 of that task), this scenario's default
+     * short thread body rides as the FIRST attachment's caption instead of
+     * a standalone `body` part (see parts()), so a single-attachment
+     * fixture can no longer produce two independent parts at all. Mirrors
      * SendReplyTest::test_a_partial_retry_resends_only_the_unaccepted_part()'s
-     * fixture -- while the body part is already accepted. The body part's own
-     * `sent` webhook must still flip its own row's status, but must never
-     * stamp the marker for a reply that is only partially delivered.
+     * equivalent rewrite.
      */
     public function test_a_partially_failed_reply_never_gets_the_marker()
     {
         $scenario = $this->scenario();
         [$account, $conversation, , $thread] = $scenario;
 
-        $attachment = Attachment::create('photo.jpg', 'image/jpeg', null, 'fake-image-bytes', null, false, $thread->id, null);
+        $attachment1 = Attachment::create('photo1.jpg', 'image/jpeg', null, 'fake-image-bytes-1', null, false, $thread->id, null);
+        $attachment2 = Attachment::create('photo2.jpg', 'image/jpeg', null, 'fake-image-bytes-2', null, false, $thread->id, null);
         $thread->has_attachments = true;
         $thread->save();
 
         $this->fakeResponses([
-            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.PART-TEXT']]])),
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.PART-IMG1']]])),
             new Response(500, [], json_encode(['error' => 'image relay error'])),
         ]);
 
@@ -392,18 +400,21 @@ class SentMarkerTest extends TestCase
         $job->tries = 1;
         $job->handle();
 
-        $bodyRow = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
-        $attRow  = KapsoMessage::where('thread_id', $thread->id)
-            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment->id))->firstOrFail();
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
 
-        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $bodyRow->send_state);
-        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $attRow->send_state);
-        $this->assertNull($attRow->status, "finalizeFailure() writes only send_state + error, never status");
+        $row1 = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment1->id))->firstOrFail();
+        $row2 = KapsoMessage::where('thread_id', $thread->id)
+            ->where('part_key', KapsoMessage::partKeyForAttachment($attachment2->id))->firstOrFail();
 
-        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.PART-TEXT')))->handle();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row1->send_state);
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row2->send_state);
+        $this->assertNull($row2->status, "finalizeFailure() writes only send_state + error, never status");
 
-        $bodyRow = $bodyRow->fresh();
-        $this->assertSame('sent', $bodyRow->status, "the body part's own status must still flip on its sent webhook");
+        (new ReconcileOutboundMessage($account->id, 'whatsapp.message.sent', $this->sentPayload('wamid.PART-IMG1')))->handle();
+
+        $row1 = $row1->fresh();
+        $this->assertSame('sent', $row1->status, "the first part's own status must still flip on its sent webhook");
 
         $thread = $thread->fresh();
         $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT),

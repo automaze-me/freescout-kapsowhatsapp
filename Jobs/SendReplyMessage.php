@@ -50,6 +50,19 @@ class SendReplyMessage implements ShouldQueue
      */
     const TEXT_CHUNK_LIMIT = 4000;
 
+    /**
+     * Meta's cap on an image/document message's caption. When the reply's
+     * extracted body text is non-empty, at most this long, AND the thread
+     * has at least one attachment, the body rides as the FIRST attachment
+     * part's caption instead of a standalone text part -- WhatsApp-native
+     * shape for "text + image": one message, not two. Every other case (a
+     * longer body, or a reply with no attachments at all) keeps the
+     * original shape: chunked text part(s) via TEXT_CHUNK_LIMIT above,
+     * then every attachment sent caption-less. See parts() for the
+     * composition and a deploy-transition edge this rule introduces.
+     */
+    const MEDIA_CAPTION_LIMIT = 1024;
+
     public $threadId;
     public $tries = 3;
 
@@ -212,9 +225,36 @@ class SendReplyMessage implements ShouldQueue
     }
 
     /**
-     * The list of parts this reply breaks down into: zero or more text
-     * chunks (skipped entirely for an empty body -- e.g. an attachment-only
-     * reply), then one part per attachment, in thread order.
+     * The list of parts this reply breaks down into. Two shapes:
+     *
+     * - Caption mode: the body text is non-empty, at most
+     *   MEDIA_CAPTION_LIMIT chars, and the thread has at least one
+     *   attachment. No standalone text part is emitted at all; the FIRST
+     *   attachment part carries the text as `caption` (buildPayload()
+     *   puts it on `image.caption` / `document.caption`). Every later
+     *   attachment part is caption-less.
+     * - Original shape (a longer body, or no attachments): zero or more
+     *   text chunks (skipped entirely for an empty body -- e.g. an
+     *   attachment-only reply), then one caption-less part per attachment,
+     *   in thread order.
+     *
+     * Either way this stays deterministic across retries: same input
+     * thread, same parts, every attempt -- claimAndSend()'s part-key claim
+     * is what makes a retry safe, not anything in here.
+     *
+     * Deploy-transition edge: this method's composition changed in the
+     * commit that introduced caption mode. A job that, under the OLD code,
+     * already sent a standalone `body` part for a reply and is only now
+     * retrying its still-unclaimed attachment part will recompute parts()
+     * under the NEW code on that retry and see a single caption-mode
+     * attachment part instead -- the already-`accepted` `body` row is
+     * simply left alone (nothing in the new list has part_key `body`
+     * any more), while the attachment now also carries that same text as
+     * its caption. The customer sees the text twice for that one reply.
+     * This is a one-time edge at the moment of deploying this change, on a
+     * reply that was already mid-retry across the deploy; the claim rows
+     * still prevent any other kind of double send, within one version, on
+     * every path.
      */
     protected function parts(Thread $thread)
     {
@@ -230,9 +270,14 @@ class SendReplyMessage implements ShouldQueue
         // `sending` with nothing ever recorded. Casting keeps a null body
         // exactly equivalent to an empty one (no body parts, attachments
         // still sent).
-        $text = trim(\Helper::htmlToText((string) $thread->body));
+        $text        = trim(\Helper::htmlToText((string) $thread->body));
+        $attachments = $thread->attachments;
 
-        if ($text !== '') {
+        $caption = null;
+
+        if ($text !== '' && mb_strlen($text) <= self::MEDIA_CAPTION_LIMIT && $attachments->isNotEmpty()) {
+            $caption = $text;
+        } elseif ($text !== '') {
             foreach ($this->chunkText($text) as $i => $chunk) {
                 $parts[] = [
                     'part_key'      => KapsoMessage::partKeyForBodyChunk($i),
@@ -243,16 +288,23 @@ class SendReplyMessage implements ShouldQueue
             }
         }
 
-        foreach ($thread->attachments as $attachment) {
+        foreach ($attachments as $attachment) {
             $isImage = str_starts_with((string) $attachment->mime_type, 'image/');
 
-            $parts[] = [
+            $part = [
                 'part_key'      => KapsoMessage::partKeyForAttachment($attachment->id),
                 'attachment_id' => $attachment->id,
                 'type'          => $isImage ? 'image' : 'document',
                 'link'          => $this->attachmentLink($attachment),
                 'filename'      => $attachment->file_name,
             ];
+
+            if ($caption !== null) {
+                $part['caption'] = $caption;
+                $caption         = null; // only the first attachment part carries it
+            }
+
+            $parts[] = $part;
         }
 
         return $parts;
@@ -292,19 +344,31 @@ class SendReplyMessage implements ShouldQueue
         }
 
         if ($part['type'] === 'image') {
+            $image = ['link' => $part['link']];
+
+            if (!empty($part['caption'])) {
+                $image['caption'] = $part['caption'];
+            }
+
             return [
                 'messaging_product' => 'whatsapp',
                 'to'                => $to,
                 'type'              => 'image',
-                'image'             => ['link' => $part['link']],
+                'image'             => $image,
             ];
+        }
+
+        $document = ['link' => $part['link'], 'filename' => $part['filename']];
+
+        if (!empty($part['caption'])) {
+            $document['caption'] = $part['caption'];
         }
 
         return [
             'messaging_product' => 'whatsapp',
             'to'                => $to,
             'type'              => 'document',
-            'document'          => ['link' => $part['link'], 'filename' => $part['filename']],
+            'document'          => $document,
         ];
     }
 
