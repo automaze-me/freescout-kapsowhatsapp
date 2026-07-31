@@ -314,6 +314,84 @@ class TemplateEndpointsTest extends TestCase
         \Bus::assertNotDispatched(SendReplyMessage::class);
     }
 
+    /**
+     * Non-scalar JSON where a string belongs must be a clean 422, never a
+     * 500: this app escalates PHP's "Array to string conversion" warning to
+     * a thrown ErrorException (error_reporting(-1) + the overridden
+     * HandleExceptions bootstrap), so an unguarded `(string)` cast on
+     * attacker-shaped input is a crash, not a coercion.
+     */
+    public function test_non_scalar_input_is_rejected_with_a_422()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $this->seedInbound($account, $conversation);
+        $agent = $this->adminUser();
+
+        // Both requests may re-fetch the template list before validating
+        // variables; queue one response for each.
+        $this->fakeResponses([$this->templatesResponse(), $this->templatesResponse()]);
+
+        \Bus::fake();
+
+        $this->actingAs($agent)->postJson(route('kapsowhatsapp.templates.send', $conversation->id), [
+            'name'      => ['order_shipped'],
+            'language'  => 'en_US',
+            'variables' => ['Ann', 'A-1'],
+        ])->assertStatus(422);
+
+        $this->actingAs($agent)->postJson(route('kapsowhatsapp.templates.send', $conversation->id), [
+            'name'      => 'order_shipped',
+            'language'  => 'en_US',
+            'variables' => [['Ann'], 'A-1'],
+        ])->assertStatus(422);
+
+        $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->count());
+        \Bus::assertNotDispatched(SendTemplateMessage::class);
+    }
+
+    /**
+     * business_account_id is nullable (the account-sync admin action writes
+     * null when Kapso's number record omits it), and templatesPath() would
+     * build ".../v24.0//message_templates" from it -- whose Kapso-side 404
+     * renders as a message blaming the PHONE NUMBER ID, pointing the admin
+     * at the wrong field. Both endpoints must instead refuse up front,
+     * naming the Business Account ID, without any HTTP request leaving.
+     */
+    public function test_a_missing_business_account_id_reports_an_honest_error()
+    {
+        $account = $this->makeAccount();
+        $account->business_account_id = null;
+        $account->save();
+        $conversation = $this->makeConversation($account);
+        $this->seedInbound($account, $conversation);
+        $agent = $this->adminUser();
+
+        $this->fakeResponses([]);
+
+        $response = $this->actingAs($agent)
+            ->getJson(route('kapsowhatsapp.templates.list', $conversation->id));
+
+        $response->assertStatus(200);
+        $json = $this->decodeJson($response);
+        $this->assertArrayHasKey('error', $json);
+        $this->assertStringContainsString('Business Account', $json['error']);
+
+        \Bus::fake();
+
+        $sendResponse = $this->actingAs($agent)->postJson(route('kapsowhatsapp.templates.send', $conversation->id), [
+            'name'      => 'order_shipped',
+            'language'  => 'en_US',
+            'variables' => ['Ann', 'A-1'],
+        ]);
+
+        $sendResponse->assertStatus(422);
+        $this->assertStringContainsString('Business Account', $this->decodeJson($sendResponse)['error']);
+
+        $this->assertSame([], $this->history, 'no request may leave for an account without a business_account_id');
+        \Bus::assertNotDispatched(SendTemplateMessage::class);
+    }
+
     public function test_send_validates_variables()
     {
         $account      = $this->makeAccount();

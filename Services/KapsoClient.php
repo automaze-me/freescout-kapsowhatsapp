@@ -453,7 +453,11 @@ class KapsoClient
      * The highest numbered `{{n}}` placeholder in a template BODY text, 0
      * when it has none. Named parameters (`{{customer_name}}`, Meta's newer
      * template syntax) are deliberately out of scope -- Stage 3c's send
-     * payload only ever builds positional `{{n}}` parameters.
+     * payload only ever builds positional `{{n}}` parameters. Max, not
+     * count: a GAPPED body ({{1}} and {{3}}, no {{2}}) would render three
+     * inputs with one unused -- accepted, because Meta does not approve
+     * gapped templates, so the case is unreachable through the APPROVED
+     * filter above.
      */
     protected function maxTemplateVariable($body)
     {

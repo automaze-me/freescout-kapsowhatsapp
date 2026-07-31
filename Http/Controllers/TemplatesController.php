@@ -40,7 +40,11 @@ class TemplatesController extends Controller
      * on the WhatsApp channel -- there is nothing template-shaped about it
      * to authorise access to in the first place, and 404 does not leak
      * whether a non-WhatsApp conversation id exists to a caller who is
-     * merely probing this WhatsApp-specific endpoint.
+     * merely probing this WhatsApp-specific endpoint. (An EXISTING WhatsApp
+     * conversation the caller cannot see does answer 403, distinguishable
+     * from the 404 -- accepted: core's own conversation view behaves
+     * identically, findOrFail then authorize, so this leaks nothing core
+     * does not already leak.)
      */
     protected function resolveConversation($conversationId): Conversation
     {
@@ -116,6 +120,10 @@ class TemplatesController extends Controller
             return response()->json(['error' => $this->noAccountMessage()]);
         }
 
+        if (!$account->business_account_id) {
+            return response()->json(['error' => $this->noBusinessAccountMessage()]);
+        }
+
         try {
             $templates = (new KapsoClient($account))->listMessageTemplates();
         } catch (KapsoApiException $e) {
@@ -164,10 +172,22 @@ class TemplatesController extends Controller
             return response()->json(['error' => $this->noAccountMessage()], 422);
         }
 
-        $name     = trim((string) $request->input('name'));
-        $language = trim((string) $request->input('language'));
+        if (!$account->business_account_id) {
+            return response()->json(['error' => $this->noBusinessAccountMessage()], 422);
+        }
+
+        // is_string() before the trim() casts, not `(string)`: this app
+        // escalates PHP's "Array to string conversion" warning to a thrown
+        // ErrorException (error_reporting(-1) + the overridden
+        // HandleExceptions bootstrap), so casting attacker-shaped JSON
+        // (`{"name": ["x"]}`) would 500 instead of 422.
+        $rawName      = $request->input('name');
+        $rawLanguage  = $request->input('language');
         $rawVariables = $request->input('variables', []);
-        $variables    = is_array($rawVariables) ? array_values($rawVariables) : [];
+
+        $name      = is_string($rawName) ? trim($rawName) : '';
+        $language  = is_string($rawLanguage) ? trim($rawLanguage) : '';
+        $variables = is_array($rawVariables) ? array_values($rawVariables) : [];
 
         if ($name === '' || $language === '') {
             return response()->json(['error' => __('Choose a template to send.')], 422);
@@ -188,7 +208,9 @@ class TemplatesController extends Controller
         $clean = $this->validateVariables($variables, $template['variables']);
 
         if ($clean === null) {
-            return response()->json(['error' => __('Fill in every value for this template (each up to 1024 characters).')], 422);
+            return response()->json(['error' => __('Fill in every value for this template (each up to :limit characters).', [
+                'limit' => SendTemplateMessage::VARIABLE_CHAR_LIMIT,
+            ])], 422);
         }
 
         $substituted = $this->substitute($template['body'], $clean);
@@ -228,6 +250,19 @@ class TemplatesController extends Controller
         return __('This conversation has no active WhatsApp account to send from.');
     }
 
+    /**
+     * business_account_id is nullable (the account-sync admin action writes
+     * null when Kapso's number record omits it). Without this refusal,
+     * templatesPath() builds ".../v24.0//message_templates" and Kapso's 404
+     * renders as errorMessage()'s Phone-Number-ID complaint -- written for
+     * the phone-number-scoped endpoints and pointing the admin at the wrong
+     * field entirely.
+     */
+    protected function noBusinessAccountMessage()
+    {
+        return __('This WhatsApp account has no WhatsApp Business Account ID. Re-sync it on the WhatsApp (Kapso) settings page, then try again.');
+    }
+
     protected function findTemplate(array $templates, $name, $language)
     {
         foreach ($templates as $template) {
@@ -240,13 +275,15 @@ class TemplatesController extends Controller
     }
 
     /**
-     * Every value must be present (count must exactly match the template's
-     * declared variable count), non-blank after trim, and at most 1024
-     * characters (Meta's own per-parameter limit, the same cap
-     * SendTemplateMessage::VARIABLE_CHAR_LIMIT defensively re-enforces).
-     * Returns the trimmed values, or null on any violation -- the caller
-     * turns null into one generic 422, since this is a small inline form,
-     * not a multi-field admin form that benefits from per-field messages.
+     * Every value must be a scalar (see send()'s is_string comment -- a
+     * nested array would turn the cast into a thrown ErrorException),
+     * present (count must exactly match the template's declared variable
+     * count), non-blank after trim, and at most
+     * SendTemplateMessage::VARIABLE_CHAR_LIMIT characters (Meta's own
+     * per-parameter limit, which the job defensively re-enforces). Returns
+     * the trimmed values, or null on any violation -- the caller turns null
+     * into one generic 422, since this is a small inline form, not a
+     * multi-field admin form that benefits from per-field messages.
      *
      * @return ?string[]
      */
@@ -259,9 +296,13 @@ class TemplatesController extends Controller
         $clean = [];
 
         foreach ($variables as $variable) {
+            if (!is_scalar($variable)) {
+                return null;
+            }
+
             $value = trim((string) $variable);
 
-            if ($value === '' || mb_strlen($value) > 1024) {
+            if ($value === '' || mb_strlen($value) > SendTemplateMessage::VARIABLE_CHAR_LIMIT) {
                 return null;
             }
 
