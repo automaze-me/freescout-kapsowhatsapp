@@ -53,6 +53,19 @@ class KapsoMessage extends Model
      */
     const THREAD_META_SENT_AT = 'kapsowhatsapp_sent_at';
 
+    /**
+     * Thread::meta key Stage 4's RouteReplyChannel::capture() writes on a
+     * reply thread (TYPE_MESSAGE only) to record the agent's per-reply
+     * channel choice -- values are exactly ChannelChoice::CHANNEL_WHATSAPP /
+     * CHANNEL_EMAIL, never anything else (capture() only ever writes one of
+     * the two, and only when ChannelChoice says that channel is available on
+     * the conversation). Absence means "native": the reply behaves exactly
+     * as it always has, whether or not this module is even active. See
+     * "Stage 4: per-reply channel selection" in
+     * dev-notes/specs/2026-07-28-kapso-whatsapp-design.md.
+     */
+    const THREAD_META_CHANNEL = 'kapsowhatsapp_channel';
+
     const SEND_STATE_SENDING  = 'sending';
     const SEND_STATE_ACCEPTED = 'accepted';
     const SEND_STATE_FAILED   = 'failed';

@@ -52,6 +52,16 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // (KapsoAccount::CHANNEL) conversations and queues delivery.
         \Eventy::addAction('chat_conversation.send_reply', [new \Modules\KapsoWhatsApp\Listeners\SendReplyToWhatsApp(), 'handle'], 20, 3);
 
+        // Stage 4: per-reply channel selection. capture() writes the
+        // agent's posted channel choice onto the reply thread's meta;
+        // intercept() reads it back inside core's own send-or-skip decision
+        // and, only for a genuine cross-channel choice, dispatches the
+        // OTHER channel's send job itself. See
+        // Listeners/RouteReplyChannel.php's class docblock and "Stage 4:
+        // per-reply channel selection" in the design spec.
+        \Eventy::addAction('thread.before_save_from_request', [\Modules\KapsoWhatsApp\Listeners\RouteReplyChannel::class, 'capture'], 20, 2);
+        \Eventy::addFilter('conversation.skip_send_reply_to_customer', [\Modules\KapsoWhatsApp\Listeners\RouteReplyChannel::class, 'intercept'], 20, 3);
+
         // Core already renders a name and download link for every
         // attachment (resources/views/conversations/partials/thread_attachments.blade.php);
         // this adds an inline thumbnail for images only. Other attachment
