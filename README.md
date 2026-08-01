@@ -135,6 +135,28 @@ same red delivery-failure line item described above. Sending a template does **n
 Any agent who can reply to the conversation can send a template on it — this is not restricted to
 admins.
 
+## Choosing the channel per reply
+
+A conversation with WhatsApp history and a customer email on file — a customer who started on one
+channel and can be reached on the other too — shows a small **Send via: Email | WhatsApp** control
+above the Send button. Agents pick a channel per reply: a customer who emailed in can get a WhatsApp
+reply, and a customer who wrote in on WhatsApp can get an email reply later, in the very same
+conversation. The picker only appears when both channels are genuinely usable for that conversation;
+otherwise a reply behaves exactly as it always has, with no control shown at all.
+
+The picker defaults to whichever channel the customer's own most recent message came in on — reply
+on the same channel they're already using unless you deliberately switch. When the WhatsApp window
+is closed, the WhatsApp option is shown disabled with a note explaining why, and the default falls
+back to email; the Reply button itself only disappears entirely when *neither* channel is usable
+(closed window and no email on file). A closed window does not stop you from sending a WhatsApp
+message on a mixed conversation — the picker carries the same **Send a template…** control described
+above for exactly this case.
+
+Choosing WhatsApp on an email-first conversation, or email on a WhatsApp-first one, delivers exactly
+the way a reply on that channel normally does — the same undo delay, the same delivery-failure
+reporting, the same *Sent via WhatsApp* marker. The conversation's own channel never changes; the
+choice applies to that one reply only.
+
 ## Channel code
 
 This module registers communication channel **102**. Codes 100 and 101 are used by the

@@ -36,9 +36,15 @@ class WindowBannerTest extends TestCase
         return $account;
     }
 
-    protected function makeConversation(KapsoAccount $account, int $channel = KapsoAccount::CHANNEL): Conversation
+    /**
+     * $customer is optional (Task 1/3b's tests never needed one of their
+     * own) -- Stage 4's reply-button matrix does, to exercise
+     * ChannelChoice::emailAvailable() alongside WindowState, so this grows
+     * an optional param rather than a second near-identical helper.
+     */
+    protected function makeConversation(KapsoAccount $account, int $channel = KapsoAccount::CHANNEL, ?Customer $customer = null): Conversation
     {
-        $customer = Customer::createWithoutEmail(['first_name' => 'Wanda', 'last_name' => 'WhatsApp']);
+        $customer = $customer ?: Customer::createWithoutEmail(['first_name' => 'Wanda', 'last_name' => 'WhatsApp']);
 
         $folder = Folder::where('mailbox_id', $account->mailbox_id)
             ->where('type', Folder::TYPE_UNASSIGNED)
@@ -220,33 +226,54 @@ class WindowBannerTest extends TestCase
     }
 
     /**
-     * C1 (Critical): core's own conversation.reply_button.enabled filter
-     * (app/Misc/ConversationActionButtons.php:25,
+     * C1 (Critical), revised for Stage 4 (the "3b revision" forced by
+     * per-reply channel selection -- see the spec's UI section): the reply
+     * button must stay removed when the window is closed and the customer
+     * has no email (WhatsApp was the only way to reach them, and it just
+     * became unavailable) but must now STAY when an email is on file --
+     * with the picker (Task 3) locking to email and WhatsApp merely showing
+     * disabled, the reply box is still genuinely usable. Core's own filter
+     * is app/Misc/ConversationActionButtons.php:25,
      * \Eventy::filter('conversation.reply_button.enabled', true,
-     * $conversation)) is the real fix -- with no `.conv-reply` in the DOM,
-     * the toolbar shows no dead button and chat mode's auto-open
-     * (public/js/main.js:1354 `$(".conv-reply").click()`) simply no-ops.
+     * $conversation); with no `.conv-reply` in the DOM, the toolbar shows
+     * no dead button and chat mode's auto-open (public/js/main.js:1354
+     * `$(".conv-reply").click()`) simply no-ops.
      */
-    public function test_the_reply_button_is_removed_when_the_window_is_closed()
+    public function test_the_reply_button_matrix()
     {
         $account = $this->makeAccount();
 
-        // Deliberately different contact phones for $closed and $open:
-        // WindowState is keyed per (account, contact), not per conversation
-        // (WindowStateTest::test_the_window_is_keyed_per_contact_not_per_conversation
-        // pins this) -- sharing one phone across both would let $open's
-        // recent inbound message reopen $closed's window too.
-        $closed = $this->makeConversation($account);
-        $this->seedMessage($account, $closed, '+491771111111', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+        // Deliberately different contact phones for every conversation
+        // below: WindowState is keyed per (account, contact), not per
+        // conversation (WindowStateTest::test_the_window_is_keyed_per_contact_not_per_conversation
+        // pins this) -- sharing a phone would let one conversation's recent
+        // inbound message reopen another's window.
+        $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
+        $emailCustomer   = Customer::create('picker-reply-button@example.com', ['first_name' => 'Pick']);
 
-        $open = $this->makeConversation($account);
-        $this->seedMessage($account, $open, '+491772222222', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+        $closedNoEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
+        $this->seedMessage($account, $closedNoEmail, '+491771111111', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
 
-        $other = $this->makeConversation($account, 1);
+        $closedWithEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $emailCustomer);
+        $this->seedMessage($account, $closedWithEmail, '+491772222222', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
 
-        $this->assertFalse(\Eventy::filter('conversation.reply_button.enabled', true, $closed), 'a closed window must remove the reply button');
-        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $open), 'an open window must leave the reply button alone');
-        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $other), 'a non-WhatsApp conversation must pass the filter through untouched');
+        $openNoEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
+        $this->seedMessage($account, $openNoEmail, '+491773333333', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+
+        $openWithEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $emailCustomer);
+        $this->seedMessage($account, $openWithEmail, '+491774444444', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+
+        // No window state at all (never messaged): untouched regardless of
+        // email, same as before Stage 4 -- kept here rather than dropped so
+        // this branch of the filter (the $state-is-null passthrough) stays
+        // covered now that the old single-condition test is gone.
+        $noHistory = $this->makeConversation($account, 1, $noEmailCustomer);
+
+        $this->assertFalse(\Eventy::filter('conversation.reply_button.enabled', true, $closedNoEmail), 'closed window + no email must remove the reply button');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $closedWithEmail), 'closed window + an email on file must keep the reply button: email reply stays possible');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $openNoEmail), 'an open window must leave the reply button alone regardless of email');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $openWithEmail), 'an open window must leave the reply button alone regardless of email');
+        $this->assertTrue(\Eventy::filter('conversation.reply_button.enabled', true, $noHistory), 'a conversation with no window state at all must pass the filter through untouched');
     }
 
     /**

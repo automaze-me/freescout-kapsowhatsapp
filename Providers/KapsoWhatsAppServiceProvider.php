@@ -150,7 +150,7 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         }, 20, 2);
 
         // C1: the Reply button must not exist at all when the window is
-        // closed, not merely be disabled client-side -- with no
+        // closed AND the customer has no email on file -- with no
         // `.conv-reply` in the DOM, the toolbar shows no dead button and
         // chat mode's own auto-open (public/js/main.js:1354
         // `$(".conv-reply").click()`) simply no-ops. This is core's own
@@ -158,11 +158,34 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // (app/Misc/ConversationActionButtons.php:25); the module JS below
         // becomes belt-and-braces for whatever this filter cannot reach
         // (e.g. an already-rendered page).
+        //
+        // Stage 4 revision (forced by per-reply channel selection -- see
+        // the spec's UI section, "3b revision"): a closed WhatsApp window
+        // no longer removes the button unconditionally. With an email on
+        // file, the reply box stays usable -- the Task 3 picker below locks
+        // its default to email and merely shows WhatsApp disabled, exactly
+        // like any other mixed conversation. Only when NEITHER channel can
+        // carry the reply (closed window, no email) is there truly nothing
+        // to click Reply for.
         \Eventy::addFilter('conversation.reply_button.enabled', function ($enabled, $conversation) {
             $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
 
-            return ($state && !$state['open']) ? false : $enabled;
+            if ($state && !$state['open'] && !\Modules\KapsoWhatsApp\Services\ChannelChoice::emailAvailable($conversation)) {
+                return false;
+            }
+
+            return $enabled;
         }, 20, 2);
+
+        // Stage 4, Task 3: the per-reply channel picker, injected at core's
+        // reply_form.after hook (view.blade.php:342, inside .conv-reply-block
+        // but -- see renderChannelPicker()'s and the partial's own docblocks
+        // for the empirical finding -- OUTSIDE the reply <form>). Renders
+        // nothing unless ChannelChoice::pickerAvailable() says the agent
+        // genuinely has a choice to make on this conversation.
+        \Eventy::addAction('reply_form.after', function ($conversation) {
+            self::renderChannelPicker($conversation);
+        }, 20, 1);
 
         // Ships the module's own JS asset -- on a closed window it disables
         // the reply triggers client-side, and in both window states it
@@ -218,5 +241,52 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // $conversation is passed through so the closed branch can build its
         // "Send a template…" picker URLs (Stage 3c) via route(...).
         echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline, 'conversation' => $conversation])->render();
+    }
+
+    /**
+     * Stage 4, Task 3: the per-reply channel picker
+     * (Resources/views/partials/channel_picker.blade.php), rendered at core's
+     * reply_form.after hook. Renders nothing unless
+     * ChannelChoice::pickerAvailable($conversation) -- both channels must be
+     * genuinely reachable, or there is nothing to pick between (this is
+     * conversation-scoped, never customer-scoped -- see
+     * Services/ChannelChoice.php's class docblock).
+     */
+    protected static function renderChannelPicker($conversation)
+    {
+        if (!\Modules\KapsoWhatsApp\Services\ChannelChoice::pickerAvailable($conversation)) {
+            return;
+        }
+
+        $state      = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
+        $windowOpen = $state ? $state['open'] : false;
+
+        // Unreachable today: pickerAvailable() already required
+        // ChannelChoice::whatsappAvailable($conversation) -- at least one
+        // inbound row for THIS conversation -- which is exactly
+        // WindowState::compute()'s own anchor query, so $state can never
+        // actually be null here. Guarded anyway, the same defensive style
+        // WindowState::compute() itself uses for its own "impossible"
+        // branch (see that method's comment).
+        $windowHint = '';
+        if ($state) {
+            $windowHint = $windowOpen
+                ? __('closes :relative', ['relative' => \App\User::dateDiffForHumans($state['closes_at']->copy())])
+                : __('window closed :relative', ['relative' => \App\User::dateDiffForHumans($state['closes_at']->copy())]);
+        }
+
+        // The 3c template control lives on the picker only for a NON-102
+        // conversation -- a channel-102 conversation already carries it on
+        // the closed banner above (renderWindowBanner()); never both, per
+        // spec.
+        $templateTransport = !$windowOpen && (int) $conversation->channel !== \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL;
+
+        echo view('kapsowhatsapp::partials/channel_picker', [
+            'conversation'      => $conversation,
+            'default'           => \Modules\KapsoWhatsApp\Services\ChannelChoice::defaultChannel($conversation),
+            'windowOpen'        => $windowOpen,
+            'windowHint'        => $windowHint,
+            'templateTransport' => $templateTransport,
+        ])->render();
     }
 }

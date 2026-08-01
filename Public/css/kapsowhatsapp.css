@@ -130,3 +130,50 @@
 .kwa-template-picker .kwa-template-actions .btn + .btn {
     margin-left: 6px;
 }
+
+/**
+ * Stage 4, Task 3: the per-reply channel picker
+ * (Resources/views/partials/channel_picker.blade.php). No stable anchor
+ * exists to reposition it next to the Send button group -- that button only
+ * exists in the DOM, visibly, after core's own jQuery-ready-time editor init
+ * copies editor_bottom_toolbar's markup into .note-statusbar (main.js:1800),
+ * which runs AFTER this module's DOMContentLoaded listener (see
+ * js/kapsowhatsapp.js's file docblock for why that ordering holds) -- so the
+ * partial stays exactly where reply_form.after renders it and is styled in
+ * place instead, per the Task 3 plan's own fallback for "no stable anchor".
+ */
+.kwa-channel-picker {
+    margin: 6px 0;
+}
+
+.kwa-channel-picker .radio-inline {
+    margin-right: 4px;
+}
+
+.kwa-channel-picker input[type="radio"]:disabled + * ,
+.kwa-channel-picker input[type="radio"]:disabled {
+    opacity: 0.5;
+}
+
+.kwa-channel-window-hint {
+    margin-left: 4px;
+    font-style: italic;
+}
+
+.kwa-channel-picker .kwa-send-template-btn {
+    margin-left: 8px;
+}
+
+/**
+ * A channel picker makes no sense while composing a note -- a note never
+ * leaves FreeScout on any channel (RouteReplyChannel::capture() already
+ * refuses to record a choice for a TYPE_NOTE thread even if this were
+ * somehow still visible) -- so it is hidden the same way core hides its own
+ * reply-only controls in note mode (public/css/style.css:2531-2533,
+ * `.conv-note-block .conv-recipient` etc.): a plain CSS rule keyed off the
+ * ancestor class core's own JS toggles, no extra JS of this module's own
+ * needed.
+ */
+.conv-note-block .kwa-channel-picker {
+    display: none;
+}

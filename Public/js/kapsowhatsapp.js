@@ -50,6 +50,76 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // Stage 4: get the per-reply channel picker's choice into the reply
+    // request. The picker (Resources/views/partials/channel_picker.blade.php)
+    // renders at core's reply_form.after hook, which -- verified against
+    // core's markup, see the partial's own docblock for the exact line
+    // numbers -- sits OUTSIDE the reply <form>. Core's send flow never does
+    // a native form submit; the .btn-reply-submit click handler
+    // (public/js/main.js:2262) posts $(".form-reply:first").serialize()
+    // (main.js:2314), which walks only DESCENDANTS of the <form> element,
+    // so a radio rendered outside it is invisible to that call no matter
+    // what. The fix: on every click that could be a send, copy whichever
+    // radio is currently checked into a hidden <input> APPENDED TO THE FORM
+    // itself, before serialize() runs.
+    //
+    // A capture-phase listener on document, not a listener bound to the
+    // button node(s) directly, for two reasons at once: (1) .btn-reply-submit
+    // is shared by four different buttons (Send Reply/Forward/Add Note/
+    // Create) inside Public/../editor_bottom_toolbar.blade.php, whose HTML
+    // core's own main.js re-creates via $('.note-statusbar').html(...)
+    // (main.js:1800) during jQuery's ready-time editor init -- AFTER this
+    // file's own DOMContentLoaded already ran (see the file's opening
+    // docblock for why that ordering holds), so the visible buttons a user
+    // actually clicks do not exist yet when this listener would otherwise
+    // be attached directly to them, and a plain node listener could not
+    // survive that re-creation regardless. Event delegation on document
+    // sidesteps both: it fires for a target added to the DOM at any later
+    // time. (2) Capture always runs before bubble regardless of binding
+    // order, so this listener is guaranteed to run before main.js's own
+    // bubble-phase .click() handler on the same button -- the same
+    // capture-phase idiom this file already uses below to preempt
+    // .conv-reply's click on a closed window.
+    document.addEventListener('click', function (e) {
+        var target = e.target;
+        while (target && target.nodeType === 1) {
+            if (target.classList && target.classList.contains('btn-reply-submit')) {
+                kwaCopyChannelChoiceIntoForm();
+                return;
+            }
+            target = target.parentNode;
+        }
+    }, true);
+
+    // Copies the picker's checked radio into a hidden field inside the
+    // actual <form> element (document.createElement -- IE11-safe, no
+    // template literals). A no-op, by design, whenever there is no picker
+    // on the page (a conversation where only one channel is possible) or no
+    // reply form to write into -- the reply then posts exactly as it always
+    // has, with no kwa_channel field at all, which
+    // Listeners/RouteReplyChannel.php::capture() already treats as "native".
+    function kwaCopyChannelChoiceIntoForm() {
+        var picker = document.querySelector('.kwa-channel-picker[data-kwa-picker="1"]');
+        if (!picker) {
+            return;
+        }
+
+        var checked = picker.querySelector('input[name="kwa_channel"]:checked');
+        var form = document.querySelector('.form-reply');
+        if (!checked || !form) {
+            return;
+        }
+
+        var hidden = form.querySelector('input[name="kwa_channel"]');
+        if (!hidden) {
+            hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'kwa_channel';
+            form.appendChild(hidden);
+        }
+        hidden.value = checked.value;
+    }
+
     // Stage 3c: the "Send a template…" picker on the closed-window notice.
     // Guarded on the presence of data-kwa-templates-url itself, not the
     // `closed` flag above -- the same marker-driven style as the
