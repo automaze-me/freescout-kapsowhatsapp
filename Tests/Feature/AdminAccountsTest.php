@@ -123,7 +123,7 @@ class AdminAccountsTest extends TestCase
         $mailbox = $this->testMailbox();
         $this->fakeResponses(array_merge(
             [$this->numbersResponse([
-                ['phone_number_id' => '123456789012345', 'business_account_id' => 'waba-1'],
+                ['phone_number_id' => '123456789012345', 'business_account_id' => 'waba-1', 'display_phone_number' => '+49 177 5550000'],
             ])],
             $this->webhookRegistrationResponses('wh-created-1')
         ));
@@ -142,6 +142,26 @@ class AdminAccountsTest extends TestCase
         $this->assertNotNull($account);
         $this->assertSame($mailbox->id, (int) $account->mailbox_id);
         $this->assertSame('wh-created-1', $account->webhook_id, 'creating an account must register its webhook automatically');
+        // User feedback: the Phone Number ID means nothing to a human, so
+        // the record's display_phone_number is stored for the admin UI.
+        $this->assertSame('+49 177 5550000', $account->phone_number);
+        $this->assertSame('+49 177 5550000', $account->display_number);
+    }
+
+    /**
+     * Accounts created before phone_number existed (or whose Kapso record
+     * had no display_phone_number yet) must keep showing SOMETHING that
+     * identifies them -- the id is the graceful fallback, never a blank.
+     */
+    public function test_display_number_falls_back_to_the_phone_number_id()
+    {
+        $account = $this->makeAccount();
+
+        $this->assertNull($account->phone_number);
+        $this->assertSame($account->phone_number_id, $account->display_number);
+
+        $account->phone_number = '+49 177 5550001';
+        $this->assertSame('+49 177 5550001', $account->display_number);
     }
 
     /**

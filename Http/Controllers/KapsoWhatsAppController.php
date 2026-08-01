@@ -507,6 +507,10 @@ class KapsoWhatsAppController extends Controller
 
         $account->name                = $name;
         $account->phone_number_id     = (string) $record['phone_number_id'];
+        // The human-readable number for the admin UI (null, not '', when
+        // Meta hasn't confirmed one -- display_number then falls back to
+        // the id).
+        $account->phone_number        = KapsoNumber::phoneNumber($record) ?: null;
         $account->business_account_id = isset($record['business_account_id']) && is_scalar($record['business_account_id'])
             ? (string) $record['business_account_id']
             : null;

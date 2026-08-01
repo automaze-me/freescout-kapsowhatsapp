@@ -152,6 +152,12 @@ class WindowBannerTest extends TestCase
         $this->assertStringContainsString('data-kwa-window-closed', $html);
         $this->assertStringContainsString('this window closed', $html);
         $this->assertStringContainsString('alert-danger', $html);
+        // The block (normal-mode) variants carry kwa-window-status-block:
+        // its side margins align them with core's padded subject column
+        // (user feedback: the bare status line sat flush on the sidebar
+        // divider). The inline variants must never carry it -- they float
+        // in the pill row, where a side margin would misalign them.
+        $this->assertStringContainsString('kwa-window-status-block', $html);
         // The two data markers are mutually exclusive -- the JS colours the
         // channel pill red-or-green off exactly one of them.
         $this->assertStringNotContainsString('data-kwa-window-open', $html);
@@ -169,6 +175,9 @@ class WindowBannerTest extends TestCase
         $this->assertStringContainsString('closes', $html);
         $this->assertStringContainsString('data-kwa-window-open', $html);
         $this->assertStringNotContainsString('data-kwa-window-closed', $html);
+        // Same alignment rule as the closed banner: block variant, so it
+        // carries the side margins that keep it off the sidebar divider.
+        $this->assertStringContainsString('kwa-window-status-block', $html);
     }
 
     public function test_non_whatsapp_conversations_get_no_banner()
@@ -311,6 +320,7 @@ class WindowBannerTest extends TestCase
         }
 
         $this->assertStringNotContainsString('alert-danger', $html, 'chat mode must not render the alert box');
+        $this->assertStringNotContainsString('kwa-window-status-block', $html, 'the block margins must never reach the floated inline variant');
         $this->assertStringContainsString('kwa-window-closed-inline', $html);
         $this->assertStringContainsString('data-kwa-window-closed', $html);
         $this->assertStringContainsString('reply window closed', $html);

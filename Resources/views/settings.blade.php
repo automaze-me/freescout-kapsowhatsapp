@@ -54,7 +54,7 @@
                     <thead>
                         <tr>
                             <th>{{ __('Name') }}</th>
-                            <th>{{ __('Phone Number ID') }}</th>
+                            <th>{{ __('Number') }}</th>
                             <th>{{ __('Mailbox') }}</th>
                             <th>{{ __('Active') }}</th>
                             <th>{{ __('Webhook') }}</th>
@@ -74,7 +74,11 @@
                         @foreach ($accounts as $account)
                         <tr>
                             <td>{{ $account->name }}</td>
-                            <td><code>{{ $account->phone_number_id }}</code></td>
+                            {{-- display_number, not phone_number_id: the id
+                                 means nothing to a human (user feedback);
+                                 it only appears as the fallback for
+                                 accounts with no stored number. --}}
+                            <td>{{ $account->display_number }}</td>
                             <td>{{ $account->mailbox ? $account->mailbox->name : '—' }}</td>
                             <td>{{ $account->is_active ? __('Yes') : __('No') }}</td>
                             <td>

@@ -12,8 +12,20 @@ class KapsoAccount extends Model
     protected $table = 'kapso_whatsapp_accounts';
 
     protected $fillable = [
-        'name', 'phone_number_id', 'business_account_id', 'mailbox_id', 'is_active',
+        'name', 'phone_number_id', 'phone_number', 'business_account_id', 'mailbox_id', 'is_active',
     ];
+
+    /**
+     * What the admin UI shows for this account's number: the human-readable
+     * phone_number (Kapso's display_phone_number, stored at creation), or
+     * the Phone Number ID when no number is stored -- accounts created
+     * before the column existed, or numbers Meta hasn't confirmed yet. The
+     * id is meaningless to a person, but it is never a BLANK cell.
+     */
+    public function getDisplayNumberAttribute()
+    {
+        return $this->phone_number ?: $this->phone_number_id;
+    }
 
     protected $casts = [
         'is_active'      => 'boolean',

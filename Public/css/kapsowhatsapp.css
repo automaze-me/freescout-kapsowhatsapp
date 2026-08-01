@@ -29,6 +29,20 @@
 }
 
 /**
+ * Normal mode only (the banner rendered on after_subject_block as its own
+ * row): core's subject/pills column is inset 20px from the content edge
+ * (measured live -- .conv-subjtext at x=280 against the container's
+ * x=260), but the hook's output renders outside that padded wrapper, so
+ * without this the status line sat flush on the sidebar divider (user
+ * feedback). Never applied to the inline chat-mode variants, which float
+ * inside the pill row.
+ */
+.kwa-window-status-block {
+    margin-left: 20px;
+    margin-right: 20px;
+}
+
+/**
  * Chat mode's closed state (user feedback, seen live): the channel pill is
  * already coloured red, so no alert box in the subject row. This is the
  * open-state hint's exact geometry -- float into the pill row with the

@@ -23,7 +23,7 @@
                 <div class="form-group">
                     <label class="col-sm-2 control-label">{{ __('WhatsApp Number') }}</label>
                     <div class="col-sm-6">
-                        <p class="form-control-static"><code>{{ $account->phone_number_id }}</code></p>
+                        <p class="form-control-static">{{ $account->display_number }}</p>
                         <p class="text-help">{{ __('The number cannot be changed. To use a different number, add it as a new entry.') }}</p>
                     </div>
                 </div>

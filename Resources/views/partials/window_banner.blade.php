@@ -36,7 +36,17 @@
          getBoundingClientRect on the live page); on narrow screens the
          float wraps below them, which is the intended responsive
          behaviour. --}}
-    <div class="text-help kwa-window-status" data-kwa-window-open="1"@if (!empty($inline)) style="float:left;margin-top:8px;line-height:24px;"@endif>
+    {{-- kwa-window-status-block only on the normal-mode variant: its side
+         margins (Public/css/kapsowhatsapp.css) align the line with core's
+         padded subject column -- without them it sat flush on the sidebar
+         divider (user feedback). The inline variant floats in the pill row
+         and must not get them. --}}
+    {{-- The class is an echo, not an inline @if: Blade's directive pattern
+         (\B@) never matches an @ that directly follows a word character,
+         so `status@if` would ship literally while its @endif still
+         compiled -- unbalancing the outer conditional (a real parse error
+         this line once caused). --}}
+    <div class="text-help kwa-window-status{{ empty($inline) ? ' kwa-window-status-block' : '' }}" data-kwa-window-open="1"@if (!empty($inline)) style="float:left;margin-top:8px;line-height:24px;"@endif>
         {{ __('WhatsApp window open — closes :relative (:time)', [
             'relative' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
             'time'     => \App\User::dateFormat($state['closes_at']->copy()),
@@ -90,7 +100,7 @@
             <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
         </div>
     @else
-        <div class="alert alert-danger kwa-window-status"
+        <div class="alert alert-danger kwa-window-status kwa-window-status-block"
              @foreach ($kwaPickerAttrs as $kwaAttr => $kwaValue) {{ $kwaAttr }}="{{ $kwaValue }}" @endforeach>
             {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
                 'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),

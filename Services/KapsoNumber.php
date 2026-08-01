@@ -28,6 +28,19 @@ class KapsoNumber
     }
 
     /**
+     * The record's human-readable number alone ("+49 151 1"), '' when Meta
+     * hasn't confirmed one yet -- NO id fallback, unlike displayNumber():
+     * this is what gets STORED on KapsoAccount::phone_number, and storing
+     * the id there would defeat the column's whole purpose (the entity's
+     * own display_number accessor already falls back to the id at read
+     * time).
+     */
+    public static function phoneNumber(array $record)
+    {
+        return self::text($record, 'display_phone_number');
+    }
+
+    /**
      * The number's own display string -- what Meta shows for it, e.g.
      * "+49 151 1" -- falling back to the Kapso-assigned id when Meta hasn't
      * confirmed a number yet. Stable: unlike label(), never mixes in a
@@ -37,7 +50,7 @@ class KapsoNumber
      */
     public static function displayNumber(array $record)
     {
-        $number = self::text($record, 'display_phone_number');
+        $number = self::phoneNumber($record);
 
         // No number Meta/Kapso has confirmed yet: the Kapso-assigned id is
         // the only thing guaranteed to distinguish this row from any other,
