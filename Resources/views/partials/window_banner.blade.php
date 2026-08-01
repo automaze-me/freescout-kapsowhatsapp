@@ -50,26 +50,54 @@
         own. The data-kwa-label-* attributes are this feature's answer to "no
         client-side translation infra" (see the Stage 3c spec's "Endpoints &
         UI transport"): the picker's dynamic chrome (built by JS, since the
-        template list itself is only known after the fetch below) still
-        needs translated strings, so those come from here too, __()'d like
-        every other user-facing string in this module, rather than being
-        hardcoded English in the JS. --}}
-    <div class="alert alert-danger kwa-window-status" data-kwa-window-closed="1"
-         data-kwa-templates-url="{{ route('kapsowhatsapp.templates.list', $conversation->id) }}"
-         data-kwa-send-url="{{ route('kapsowhatsapp.templates.send', $conversation->id) }}"
-         data-kwa-csrf="{{ csrf_token() ?: '' }}"
-         data-kwa-label-send="{{ __('Send') }}"
-         data-kwa-label-cancel="{{ __('Cancel') }}"
-         data-kwa-label-loading="{{ __('Loading templates…') }}"
-         data-kwa-label-none="{{ __('No approved WhatsApp templates are available.') }}"
-         data-kwa-label-error="{{ __('Could not load templates. Please try again.') }}"
-         data-kwa-label-send-error="{{ __('Could not send the template. Please try again.') }}"
-         data-kwa-label-value="{{ __('Value') }}">
-        {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
-            'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
-        ]) }}
-        <div class="kwa-template-picker-toggle">
+        template list itself is only known after the fetch) still needs
+        translated strings, so those come from here too, __()'d like every
+        other user-facing string in this module, rather than being
+        hardcoded English in the JS.
+
+        Built once and echoed into BOTH closed variants below: the JS reads
+        the set off whichever variant rendered, so they must never drift
+        apart. --}}
+    @php
+        $kwaPickerAttrs = [
+            'data-kwa-window-closed'    => '1',
+            'data-kwa-templates-url'    => route('kapsowhatsapp.templates.list', $conversation->id),
+            'data-kwa-send-url'         => route('kapsowhatsapp.templates.send', $conversation->id),
+            'data-kwa-csrf'             => csrf_token() ?: '',
+            'data-kwa-label-send'       => __('Send'),
+            'data-kwa-label-cancel'     => __('Cancel'),
+            'data-kwa-label-loading'    => __('Loading templates…'),
+            'data-kwa-label-none'       => __('No approved WhatsApp templates are available.'),
+            'data-kwa-label-error'      => __('Could not load templates. Please try again.'),
+            'data-kwa-label-send-error' => __('Could not send the template. Please try again.'),
+            'data-kwa-label-value'      => __('Value'),
+        ];
+    @endphp
+    @if (!empty($inline))
+        {{-- Chat mode (user feedback, seen live): no alert box in the
+            subject row -- the JS already colours the channel pill red, and
+            the full-width pink block wrapped around the pills looked
+            broken. Instead: the same quiet floated hint as the open state
+            (same 8px/24px numbers, via .kwa-window-closed-inline in
+            Public/css/kapsowhatsapp.css), compact wording, the template
+            button riding on the same line, and the JS-appended picker
+            clearing below it inside the float. --}}
+        <div class="kwa-window-status kwa-window-closed-inline"
+             @foreach ($kwaPickerAttrs as $kwaAttr => $kwaValue) {{ $kwaAttr }}="{{ $kwaValue }}" @endforeach>
+            <span class="text-danger">{{ __('The 24-hour WhatsApp reply window closed :when.', [
+                'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
+            ]) }}</span>
             <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
         </div>
-    </div>
+    @else
+        <div class="alert alert-danger kwa-window-status"
+             @foreach ($kwaPickerAttrs as $kwaAttr => $kwaValue) {{ $kwaAttr }}="{{ $kwaValue }}" @endforeach>
+            {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
+                'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
+            ]) }}
+            <div class="kwa-template-picker-toggle">
+                <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
+            </div>
+        </div>
+    @endif
 @endif

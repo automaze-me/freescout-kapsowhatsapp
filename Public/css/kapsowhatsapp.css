@@ -28,6 +28,53 @@
     margin-top: 8px;
 }
 
+/**
+ * Chat mode's closed state (user feedback, seen live): the channel pill is
+ * already coloured red, so no alert box in the subject row. This is the
+ * open-state hint's exact geometry -- float into the pill row with the
+ * pills' own 8px top offset and their 24px border-box height as
+ * line-height, so text and button sit vertically centred beside them (see
+ * the partial's docblock for where those numbers were measured).
+ */
+.kwa-window-closed-inline {
+    float: left;
+    margin-top: 8px;
+    line-height: 24px;
+}
+
+.kwa-window-closed-inline .kwa-send-template-btn {
+    margin-left: 8px;
+}
+
+/**
+ * Chat mode's picker: the JS inserts it as a SIBLING after the floated
+ * notice (not inside it -- inside, it would hang indented mid-row under
+ * the hint text), so clear:both drops it below the whole pill row at the
+ * content's left edge. The bordered panel exists because on the page's
+ * white background (unlike normal mode's pink alert box) an unframed form
+ * would float ambiguously in the subject area.
+ */
+.kwa-template-picker-standalone {
+    clear: both;
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding: 8px 10px;
+    border: 1px solid #e5e5e5;
+    border-radius: 3px;
+    background-color: #fafafa;
+}
+
+.kwa-template-picker-standalone .kwa-template-preview {
+    background-color: #fff;
+    border: 1px solid #eee;
+}
+
+/* The darker #843534 further down is tuned for the pink alert background;
+   on the standalone panel Bootstrap's own danger tone reads better. */
+.kwa-template-picker-standalone .kwa-template-status.text-danger {
+    color: #a94442;
+}
+
 .kwa-template-picker {
     margin-top: 10px;
     max-width: 420px;

@@ -93,7 +93,19 @@ document.addEventListener('DOMContentLoaded', function () {
             var thisPicker = document.createElement('div');
             thisPicker.className = 'kwa-template-picker';
             thisPicker.textContent = labels.loading;
-            notice.appendChild(thisPicker);
+            if ((' ' + notice.className + ' ').indexOf(' kwa-window-closed-inline ') !== -1) {
+                // Chat mode: the notice is a float sitting to the RIGHT of
+                // the channel pills, so a picker appended inside it would
+                // hang indented mid-row under the hint text. As a sibling
+                // with clear:both (.kwa-template-picker-standalone) it
+                // drops below the whole pill row, aligned with the
+                // content's left edge.
+                thisPicker.className += ' kwa-template-picker-standalone';
+                notice.parentNode.insertBefore(thisPicker, notice.nextSibling);
+            } else {
+                // Normal mode: inside the alert box, as before.
+                notice.appendChild(thisPicker);
+            }
             picker = thisPicker;
 
             kwaFetchJson('GET', notice.getAttribute('data-kwa-templates-url'), null, null, function (failed, data) {

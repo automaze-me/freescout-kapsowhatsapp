@@ -283,6 +283,46 @@ class WindowBannerTest extends TestCase
     }
 
     /**
+     * User feedback (2026-08-01, seen live): the closed state's alert-danger
+     * box, designed for normal mode's own row, looked terrible rendered
+     * inline in chat mode's subject row -- a full-width pink block wrapping
+     * around the pills, redundant now that the JS colours the channel pill
+     * red. Chat mode's closed state is therefore the same quiet floated
+     * hint as the open state (compact red text + the template button on the
+     * same line); ONLY normal mode keeps the alert box. The data attribute
+     * set must be identical in both variants -- the JS reads them off
+     * whichever one rendered.
+     */
+    public function test_the_chat_mode_closed_state_is_an_inline_hint_not_an_alert_box()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        \Helper::setChatMode(true);
+        $this->setMatchedRouteName('conversations.view');
+
+        try {
+            $html = $this->renderAfterSubject($conversation, $account->mailbox);
+        } finally {
+            \Helper::setChatMode(false);
+            $this->setMatchedRouteName(null);
+        }
+
+        $this->assertStringNotContainsString('alert-danger', $html, 'chat mode must not render the alert box');
+        $this->assertStringContainsString('kwa-window-closed-inline', $html);
+        $this->assertStringContainsString('data-kwa-window-closed', $html);
+        $this->assertStringContainsString('reply window closed', $html);
+        // The picker's full transport+label attribute set and its button,
+        // exactly as the block variant carries them.
+        $this->assertStringContainsString('data-kwa-templates-url', $html);
+        $this->assertStringContainsString('data-kwa-send-url', $html);
+        $this->assertStringContainsString('data-kwa-label-send-error', $html);
+        $this->assertStringContainsString('kwa-send-template-btn', $html);
+    }
+
+    /**
      * C1: in chat mode, core collapses conversation.after_subject_block's
      * output inside the #conv-top-blocks accordion
      * (view.blade.php:229-234), which is not shown by default -- a banner
