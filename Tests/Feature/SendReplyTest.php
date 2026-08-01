@@ -1065,4 +1065,61 @@ class SendReplyTest extends TestCase
             return $job->threadId === $reply->id;
         });
     }
+
+    /**
+     * Task 1 of Stage 4: guards() generalises "channel 102" to "channel 102
+     * OR this conversation has WhatsApp history" -- a mixed (channel-1)
+     * conversation that has an inbound WhatsApp row must send exactly the
+     * way a native channel-102 conversation does, full payload included.
+     */
+    public function test_a_channel_1_conversation_with_an_inbound_row_sends_like_channel_102()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $conversation->channel = 1;
+        $conversation->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT1']]])),
+            new Response(200, [], json_encode(['success' => true])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $sendBody = $this->jsonBodyOf(0);
+        $this->assertSame([
+            'messaging_product' => 'whatsapp',
+            'to'                => '491771234567',
+            'type'              => 'text',
+            'text'              => ['body' => 'Hello & welcome'],
+        ], $sendBody);
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+        $this->assertSame('wamid.OUT1', $row->wamid);
+    }
+
+    /**
+     * The mirror case: a channel-1 conversation with NO WhatsApp history at
+     * all must still bail silently -- no HTTP call, no claim row -- exactly
+     * as it always has (the pre-existing "no inbound message found" guard).
+     * ChannelChoice::whatsappAvailable() being false for a rowless
+     * conversation is precisely the same fact this guard already checked by
+     * hand before Task 1.
+     */
+    public function test_a_channel_1_conversation_with_no_inbound_rows_bails_with_no_send()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $conversation->channel = 1;
+        $conversation->save();
+        $thread = $this->makeReplyThread($conversation);
+
+        // Empty queue: any HTTP attempt at all throws and fails this test.
+        $this->fakeResponses([]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->count());
+    }
 }

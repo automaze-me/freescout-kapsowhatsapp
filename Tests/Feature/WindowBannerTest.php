@@ -8,6 +8,7 @@ use App\Folder;
 use Carbon\Carbon;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\WindowState;
 use Modules\KapsoWhatsApp\Tests\TestCase;
 
 /**
@@ -371,5 +372,32 @@ class WindowBannerTest extends TestCase
 
         $this->assertStringNotContainsString('kwa-window-status', $afterSubjectNormal, 'normal mode must not render the banner on after_subject');
         $this->assertStringContainsString('kwa-window-status', $afterSubjectBlockNormal, 'normal mode must keep rendering the banner on after_subject_block');
+    }
+
+    /**
+     * Task 1 of Stage 4: WindowState::compute() drops its own channel gate
+     * (the inbound-row anchor is the gate now), so a channel-1 conversation
+     * with WhatsApp history gets a real window state. The banner must NOT
+     * follow suit -- it stays channel-102-only per spec (the Task 3 picker
+     * is the window surface for mixed conversations); the provider gains
+     * its own explicit channel gate ahead of WindowState so this stays true
+     * once WindowState itself no longer enforces it. Guards Task 3's banner
+     * scope early.
+     */
+    public function test_a_channel_1_conversation_with_rows_gets_a_window_state_but_no_banner()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account, 1);
+
+        $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $state = WindowState::forConversation($conversation);
+        $this->assertNotNull($state, 'WindowState must generalise to a rows-having non-102 conversation');
+        $this->assertFalse($state['open']);
+
+        $html = $this->renderBanner($conversation, $account->mailbox);
+
+        $this->assertStringNotContainsString('kwa-window-status', $html);
+        $this->assertStringNotContainsString('data-kwa-window-closed', $html);
     }
 }

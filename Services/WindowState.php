@@ -3,7 +3,6 @@
 namespace Modules\KapsoWhatsApp\Services;
 
 use App\Conversation;
-use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 
 /**
@@ -65,9 +64,13 @@ class WindowState
     private static $cache = [];
 
     /**
-     * Returns null when the conversation is not on the WhatsApp channel, or
-     * has no inbound WhatsApp message at all (nothing has ever opened a
-     * window for it). Otherwise:
+     * Returns null when the conversation has no inbound WhatsApp message at
+     * all (nothing has ever opened a window for it) -- true of a
+     * never-messaged conversation on ANY channel, not only channel 102:
+     * Stage 4 generalises this class off the channel column entirely, since
+     * a channel-1 (or other) conversation can carry WhatsApp history too
+     * (Decision D6: inbound appends to the customer's open conversation
+     * regardless of its channel). Otherwise:
      *   ['open' => bool, 'last_inbound_at' => Carbon, 'closes_at' => Carbon]
      * `closes_at` is `last_inbound_at + WINDOW_HOURS`; `open` is whether
      * `closes_at` is still in the future. An inbound message landing exactly
@@ -96,10 +99,6 @@ class WindowState
 
     private static function compute(Conversation $conversation): ?array
     {
-        if ((int) $conversation->channel !== KapsoAccount::CHANNEL) {
-            return null;
-        }
-
         $anchor = KapsoMessage::where('conversation_id', $conversation->id)
             ->where('direction', KapsoMessage::DIRECTION_INBOUND)
             ->orderBy('id', 'desc')

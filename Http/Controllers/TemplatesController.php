@@ -10,6 +10,7 @@ use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
 use Modules\KapsoWhatsApp\Jobs\SendTemplateMessage;
+use Modules\KapsoWhatsApp\Services\ChannelChoice;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
 
 /**
@@ -36,21 +37,26 @@ class TemplatesController extends Controller
      * of replying, not account administration, so the same population that
      * may reply at all must be able to do this too.
      *
-     * 404, not 403, for a conversation that either does not exist or is not
-     * on the WhatsApp channel -- there is nothing template-shaped about it
-     * to authorise access to in the first place, and 404 does not leak
-     * whether a non-WhatsApp conversation id exists to a caller who is
-     * merely probing this WhatsApp-specific endpoint. (An EXISTING WhatsApp
-     * conversation the caller cannot see does answer 403, distinguishable
-     * from the 404 -- accepted: core's own conversation view behaves
-     * identically, findOrFail then authorize, so this leaks nothing core
-     * does not already leak.)
+     * 404, not 403, for a conversation that either does not exist or has no
+     * WhatsApp history (Stage 4: ChannelChoice::whatsappAvailable() --
+     * channel-102 conversations always pass this by construction, since
+     * every one has at least one inbound row, so this generalises the old
+     * "not on the WhatsApp channel" gate to "nothing template-shaped here"
+     * without narrowing what a native WhatsApp conversation could already
+     * do) -- there is nothing template-shaped about it to authorise access
+     * to in the first place, and 404 does not leak whether such a
+     * conversation id exists to a caller who is merely probing this
+     * WhatsApp-specific endpoint. (An EXISTING, eligible conversation the
+     * caller cannot see does answer 403, distinguishable from the 404 --
+     * accepted: core's own conversation view behaves identically,
+     * findOrFail then authorize, so this leaks nothing core does not
+     * already leak.)
      */
     protected function resolveConversation($conversationId): Conversation
     {
         $conversation = Conversation::find($conversationId);
 
-        if (!$conversation || (int) $conversation->channel !== KapsoAccount::CHANNEL) {
+        if (!$conversation || ((int) $conversation->channel !== KapsoAccount::CHANNEL && !ChannelChoice::whatsappAvailable($conversation))) {
             abort(404);
         }
 

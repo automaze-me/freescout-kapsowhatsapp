@@ -306,4 +306,50 @@ class SendTemplateTest extends TestCase
         $this->assertSame(0, count($this->history));
         $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_TEMPLATE)->count());
     }
+
+    /**
+     * Task 1 of Stage 4: guards() generalises "channel 102" to "channel 102
+     * OR this conversation has WhatsApp history" -- a mixed (channel-1)
+     * conversation with an inbound row must send a template exactly the way
+     * a native channel-102 conversation does.
+     */
+    public function test_a_channel_1_conversation_with_an_inbound_row_sends_like_channel_102()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $conversation->channel = 1;
+        $conversation->save();
+
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['messages' => [['id' => 'wamid.OUT1']]])),
+        ]);
+
+        (new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']))->handle();
+
+        $this->assertCount(1, $this->history);
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_TEMPLATE)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_ACCEPTED, $row->send_state);
+        $this->assertSame('wamid.OUT1', $row->wamid);
+    }
+
+    /**
+     * The mirror case: a channel-1 conversation with NO WhatsApp history at
+     * all must still bail silently -- no HTTP call, no claim row.
+     */
+    public function test_a_channel_1_conversation_with_no_inbound_rows_bails_with_no_send()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+        $conversation->channel = 1;
+        $conversation->save();
+        $thread = $this->makeTemplateThread($conversation);
+
+        $this->fakeResponses([]);
+
+        (new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']))->handle();
+
+        $this->assertSame(0, count($this->history));
+        $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->count());
+    }
 }

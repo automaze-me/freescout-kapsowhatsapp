@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Services\ChannelChoice;
 use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
 
@@ -153,8 +154,12 @@ class SendReplyMessage implements ShouldQueue
     /**
      * Guards, in the order the design demands: thread exists; it is still a
      * published message (not undone back to draft, not some other thread
-     * type); its conversation exists and is on the WhatsApp channel; and an
-     * active KapsoAccount can be found via the conversation's latest inbound
+     * type); its conversation exists and is either on the WhatsApp channel
+     * or has WhatsApp history (Stage 4: ChannelChoice::whatsappAvailable()
+     * -- a mixed conversation reaches this job only through the Stage 4
+     * interceptor, never through the native chat-reply path, but the guard
+     * itself does not need to know which caller it was); and an active
+     * KapsoAccount can be found via the conversation's latest inbound
      * message (the account that actually received it, not merely "some
      * account configured for this mailbox"). Any failure here is logged at
      * info level and the job quietly does nothing -- these are races
@@ -178,7 +183,7 @@ class SendReplyMessage implements ShouldQueue
 
         $conversation = Conversation::find($thread->conversation_id);
 
-        if (!$conversation || (int) $conversation->channel !== KapsoAccount::CHANNEL) {
+        if (!$conversation || ((int) $conversation->channel !== KapsoAccount::CHANNEL && !ChannelChoice::whatsappAvailable($conversation))) {
             \Log::info('[KapsoWhatsApp] SendReplyMessage: conversation missing or not a WhatsApp conversation, skipping', ['thread_id' => $this->threadId]);
 
             return null;

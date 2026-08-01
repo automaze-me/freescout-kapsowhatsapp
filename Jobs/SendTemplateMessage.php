@@ -12,6 +12,7 @@ use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Services\ChannelChoice;
 use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
 
@@ -119,11 +120,13 @@ class SendTemplateMessage implements ShouldQueue
      * Identical guard order and log-level rules to
      * SendReplyMessage::guards() -- see that method's docblock for the
      * rationale behind each check and why races get an info log while
-     * persistent conditions get an error log. A template thread always has
-     * a prior inbound message (Stage 3c is closed-window replies only, never
-     * agent-initiated conversations -- see the spec's "Out of scope"), so
-     * requiring one here is not a stricter guard than SendReplyMessage's,
-     * just the same one.
+     * persistent conditions get an error log, and for the Stage 4
+     * generalisation of the conversation check (channel 102 OR
+     * ChannelChoice::whatsappAvailable()) applied identically here. A
+     * template thread always has a prior inbound message (Stage 3c is
+     * closed-window replies only, never agent-initiated conversations --
+     * see the spec's "Out of scope"), so requiring one here is not a
+     * stricter guard than SendReplyMessage's, just the same one.
      */
     protected function guards()
     {
@@ -143,7 +146,7 @@ class SendTemplateMessage implements ShouldQueue
 
         $conversation = Conversation::find($thread->conversation_id);
 
-        if (!$conversation || (int) $conversation->channel !== KapsoAccount::CHANNEL) {
+        if (!$conversation || ((int) $conversation->channel !== KapsoAccount::CHANNEL && !ChannelChoice::whatsappAvailable($conversation))) {
             \Log::info('[KapsoWhatsApp] SendTemplateMessage: conversation missing or not a WhatsApp conversation, skipping', ['thread_id' => $this->threadId]);
 
             return null;

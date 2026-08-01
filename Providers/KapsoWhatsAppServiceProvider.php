@@ -114,12 +114,16 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // there instead; normal mode keeps the original after_subject_block
         // placement. Each hook checks $conversation->isInChatMode() itself
         // and renders only on its own side, so exactly one echoes per
-        // request -- never both. WindowState returns null for non-WhatsApp
-        // conversations and for a WhatsApp conversation that has never had
-        // an inbound message, in which case nothing is rendered -- other
-        // modules (e.g. Checklists, CustomFields, Tags) already use these
-        // same two hooks, so this must stay silent rather than assume it
-        // owns the whole block.
+        // request -- never both. renderWindowBanner() itself now renders
+        // nothing for a non-channel-102 conversation (Stage 4: WindowState
+        // generalised its own gate to "has WhatsApp history", so this
+        // provider carries the channel-102-only restriction explicitly --
+        // banners stay native-WhatsApp-only per spec; the Task 3 picker is
+        // the window surface for a mixed conversation) or for a
+        // channel-102 conversation that has never had an inbound message --
+        // other modules (e.g. Checklists, CustomFields, Tags) already use
+        // these same two hooks, so this must stay silent rather than assume
+        // it owns the whole block.
         \Eventy::addAction('conversation.after_subject', function ($conversation, $mailbox) {
             if ($conversation->isInChatMode()) {
                 // inline: this placement sits in the subject row, directly
@@ -186,6 +190,15 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
      */
     protected static function renderWindowBanner($conversation, $inline = false)
     {
+        // Stage 4: WindowState no longer gates on channel itself (it
+        // answers for any conversation with WhatsApp history), so this
+        // explicit check is what keeps the banner channel-102-only, per
+        // spec -- a mixed (non-102) conversation's window state surfaces
+        // through the Task 3 picker instead, never through this banner.
+        if ((int) $conversation->channel !== \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL) {
+            return;
+        }
+
         $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
 
         if (!$state) {

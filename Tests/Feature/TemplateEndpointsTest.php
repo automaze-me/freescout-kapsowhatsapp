@@ -424,4 +424,39 @@ class TemplateEndpointsTest extends TestCase
         $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->count());
         \Bus::assertNotDispatched(SendTemplateMessage::class);
     }
+
+    /**
+     * Task 1 of Stage 4: resolveConversation()'s 404 generalises from
+     * "channel 102" to "no WhatsApp history" -- a mixed (channel-1)
+     * conversation with an inbound row is template-shaped too.
+     */
+    public function test_the_list_endpoint_200s_on_a_channel_1_conversation_with_rows()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account, 1);
+        $this->seedInbound($account, $conversation);
+
+        $this->fakeResponses([$this->templatesResponse()]);
+
+        $response = $this->actingAs($this->adminUser())
+            ->getJson(route('kapsowhatsapp.templates.list', $conversation->id));
+
+        $response->assertStatus(200);
+        $json = $this->decodeJson($response);
+        $this->assertArrayHasKey('templates', $json);
+    }
+
+    /**
+     * The mirror case: a channel-1 conversation with no WhatsApp history at
+     * all still 404s -- nothing template-shaped about it.
+     */
+    public function test_a_channel_1_conversation_without_rows_still_404s()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account, 1);
+
+        $this->actingAs($this->adminUser())
+            ->getJson(route('kapsowhatsapp.templates.list', $conversation->id))
+            ->assertStatus(404);
+    }
 }
