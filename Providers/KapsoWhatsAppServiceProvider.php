@@ -238,9 +238,25 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             return;
         }
 
+        // F1 (whole-stage review, CRITICAL): the closed banner used to be
+        // the ONLY source of the marker Public/js/kapsowhatsapp.js keyed its
+        // reply-blocking on (data-kwa-window-closed), which meant EVERY
+        // closed 102 conversation got its Reply button blocked client-side
+        // -- including one where C1 above correctly leaves the button in
+        // the DOM because the customer has an email on file. The picker
+        // (Task 3) renders INSIDE .conv-reply-block, so that stale JS
+        // blocker made it unreachable too: a dead Reply button on a
+        // conversation that could still legitimately send email.
+        // $blockReply is the single authority the JS now re-keys on
+        // (data-kwa-block-reply, emitted below only when this is true) --
+        // computed with exactly the same predicate as C1's filter, so the
+        // two can never disagree: nothing can send only when the window is
+        // closed AND there is no email to fall back to.
+        $blockReply = !$state['open'] && !\Modules\KapsoWhatsApp\Services\ChannelChoice::emailAvailable($conversation);
+
         // $conversation is passed through so the closed branch can build its
         // "Send a template…" picker URLs (Stage 3c) via route(...).
-        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline, 'conversation' => $conversation])->render();
+        echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline, 'conversation' => $conversation, 'blockReply' => $blockReply])->render();
     }
 
     /**

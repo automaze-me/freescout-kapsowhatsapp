@@ -150,6 +150,22 @@ class RouteReplyChannel
             SendReplyMessage::dispatch($thread->id)
                 ->delay(now()->addSeconds(Conversation::UNDO_TIMOUT));
         } else {
+            // F2 (whole-stage review, IMPORTANT): a conversation born on
+            // WhatsApp keeps conversations.customer_email = '' forever --
+            // nothing backfills a chat conversation's own column when an
+            // email is added to the customer later. Left as '', core's mail
+            // job dispatches to an empty address, Swift throws an
+            // un-retried RFC address exception, and the send dies as
+            // SEND_ERROR with no chance to retry. Backfilled here, once,
+            // right before the dispatch that is about to need it --
+            // mirrors core's own phone->email conversion backfill elsewhere
+            // (e.g. Customer::mergeWith()) rather than inventing a new
+            // pattern.
+            if (!$conversation->customer_email && $conversation->customer) {
+                $conversation->customer_email = $conversation->customer->getMainEmail();
+                $conversation->save();
+            }
+
             // Replicates core's own dispatch verbatim
             // (SendReplyToCustomer.php:110-112). The reply-to-other-customer
             // nuance core applies there (thread->getToArray()) does not

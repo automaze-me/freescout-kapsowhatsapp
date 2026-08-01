@@ -14,8 +14,14 @@
     whichever branch's second call reads it next.
 
     The block is advisory UI only -- see the "Honesty boundary" section of
-    the Stage 3b spec. `data-kwa-window-closed` is what
-    Public/js/kapsowhatsapp.js looks for to disable the reply triggers.
+    the Stage 3b spec. `data-kwa-window-closed` colours the channel pill and
+    marks the element that also carries the Stage 3c template-picker
+    transport attributes -- it is NOT the reply-blocking authority (a
+    whole-stage-review fix, F1: a closed window alone does not mean nothing
+    can send, since an email-capable customer can still be replied to).
+    `data-kwa-block-reply`, emitted below only when `$blockReply` is true
+    (computed by the provider as "window closed AND no customer email"),
+    is what Public/js/kapsowhatsapp.js's blocking section keys on instead.
 
     `$inline` is true when this renders inside the subject row (chat mode,
     conversation.after_subject): there it sits directly after the floated
@@ -82,6 +88,12 @@
             'data-kwa-label-send-error' => __('Could not send the template. Please try again.'),
             'data-kwa-label-value'      => __('Value'),
         ];
+        // F1: added as a plain array entry, not a word-adjacent inline @if,
+        // so it goes through the same foreach-echo as every other attribute
+        // here rather than risking the \B@ Blade landmine documented below.
+        if (!empty($blockReply)) {
+            $kwaPickerAttrs['data-kwa-block-reply'] = '1';
+        }
     @endphp
     @if (!empty($inline))
         {{-- Chat mode (user feedback, seen live): no alert box in the

@@ -346,4 +346,46 @@ class ReplyChannelRoutingTest extends TestCase
 
         $this->assertSame(0, KapsoMessage::where('thread_id', $triggerReply->id)->count());
     }
+
+    /**
+     * F2 (whole-stage review, IMPORTANT): a conversation born on WhatsApp
+     * keeps `customer_email = ''` forever -- nothing backfills a chat
+     * conversation's own column when an email is added to the customer
+     * later. Left alone, core's mail job would dispatch to '' and Swift
+     * throws an un-retried RFC address exception (SEND_ERROR). The email
+     * branch of intercept() must backfill the column from the customer's
+     * own address before dispatching -- mirroring core's own phone->email
+     * conversion backfill elsewhere.
+     */
+    public function test_email_choice_backfills_a_blank_conversation_customer_email()
+    {
+        $account      = $this->makeAccount();
+        $customer     = Customer::create('backfill@example.com', ['first_name' => 'Back']);
+        $conversation = $this->makeConversation($account, KapsoAccount::CHANNEL, $customer);
+        $conversation->customer_email = '';
+        $conversation->save();
+
+        $this->seedInbound($account, $conversation);
+
+        $triggerReply = $this->makeMessageThread($conversation);
+        $triggerReply->setMeta(KapsoMessage::THREAD_META_CHANNEL, ChannelChoice::CHANNEL_EMAIL);
+        $triggerReply->save();
+
+        \Bus::fake();
+
+        $result = \Eventy::filter(
+            'conversation.skip_send_reply_to_customer',
+            false,
+            $conversation,
+            collect([$triggerReply])
+        );
+
+        $this->assertTrue($result);
+
+        $conversation->refresh();
+        $this->assertSame($customer->getMainEmail(), $conversation->customer_email);
+
+        \Bus::assertDispatched(\App\Jobs\SendReplyToCustomer::class, 1);
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+    }
 }

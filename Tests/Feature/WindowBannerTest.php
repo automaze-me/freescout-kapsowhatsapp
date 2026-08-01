@@ -427,4 +427,84 @@ class WindowBannerTest extends TestCase
         $this->assertStringNotContainsString('kwa-window-status', $html);
         $this->assertStringNotContainsString('data-kwa-window-closed', $html);
     }
+
+    /**
+     * F1 (whole-stage review, CRITICAL): the reply-blocking JS must key on
+     * whether the customer can still be reached at all, not merely on the
+     * window being closed -- the old single-marker design defeated the
+     * email escape hatch: a closed 102 conversation with an email on file
+     * kept `.conv-reply` blocked and the Stage 4 picker (which renders
+     * INSIDE `.conv-reply-block`) unreachable, even though the C1 filter
+     * above correctly leaves the Reply button itself in the DOM for that
+     * exact case. `data-kwa-block-reply` is the new single authority
+     * Public/js/kapsowhatsapp.js's blocking section re-keys on;
+     * `data-kwa-window-closed` keeps only its pill-colouring and
+     * template-picker-co-attribute roles and must NOT imply blocking by
+     * itself -- both markers coexist on the same closed-notice element, so
+     * this pins them as independent booleans, not one implying the other.
+     */
+    public function test_the_block_reply_marker_follows_email_availability_not_window_state()
+    {
+        $account = $this->makeAccount();
+
+        $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
+        $emailCustomer   = Customer::create('block-reply-marker@example.com', ['first_name' => 'Has']);
+
+        $closedNoEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
+        $this->seedMessage($account, $closedNoEmail, '+491775551111', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $closedWithEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $emailCustomer);
+        $this->seedMessage($account, $closedWithEmail, '+491775552222', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $openNoEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
+        $this->seedMessage($account, $openNoEmail, '+491775553333', KapsoMessage::DIRECTION_INBOUND, now()->subHours(1));
+
+        $closedNoEmailHtml   = $this->renderBanner($closedNoEmail, $account->mailbox);
+        $closedWithEmailHtml = $this->renderBanner($closedWithEmail, $account->mailbox);
+        $openNoEmailHtml     = $this->renderBanner($openNoEmail, $account->mailbox);
+
+        $this->assertStringContainsString('data-kwa-block-reply', $closedNoEmailHtml, 'closed window + no email must block the reply trigger');
+        $this->assertStringNotContainsString('data-kwa-block-reply', $closedWithEmailHtml, 'closed window + an email on file must not block: the picker can still send email');
+        $this->assertStringNotContainsString('data-kwa-block-reply', $openNoEmailHtml, 'an open window never blocks regardless of email');
+
+        // data-kwa-window-closed keeps its own, independent role in every
+        // closed case, whether or not blocking is also in effect.
+        $this->assertStringContainsString('data-kwa-window-closed', $closedNoEmailHtml);
+        $this->assertStringContainsString('data-kwa-window-closed', $closedWithEmailHtml);
+    }
+
+    /**
+     * Same matrix, through the chat-mode inline variant
+     * (conversation.after_subject) -- the fix touches BOTH banner variants
+     * in window_banner.blade.php, and they must not drift apart.
+     */
+    public function test_the_block_reply_marker_matches_in_the_chat_mode_inline_variant()
+    {
+        $account = $this->makeAccount();
+
+        $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
+        $emailCustomer   = Customer::create('block-reply-inline@example.com', ['first_name' => 'Has']);
+
+        $closedNoEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
+        $this->seedMessage($account, $closedNoEmail, '+491775554444', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        $closedWithEmail = $this->makeConversation($account, KapsoAccount::CHANNEL, $emailCustomer);
+        $this->seedMessage($account, $closedWithEmail, '+491775555555', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
+
+        \Helper::setChatMode(true);
+        $this->setMatchedRouteName('conversations.view');
+
+        try {
+            $noEmailHtml   = $this->renderAfterSubject($closedNoEmail, $account->mailbox);
+            $withEmailHtml = $this->renderAfterSubject($closedWithEmail, $account->mailbox);
+        } finally {
+            \Helper::setChatMode(false);
+            $this->setMatchedRouteName(null);
+        }
+
+        $this->assertStringContainsString('data-kwa-block-reply', $noEmailHtml);
+        $this->assertStringNotContainsString('data-kwa-block-reply', $withEmailHtml);
+        $this->assertStringContainsString('data-kwa-window-closed', $noEmailHtml);
+        $this->assertStringContainsString('data-kwa-window-closed', $withEmailHtml);
+    }
 }

@@ -1,15 +1,32 @@
 /**
- * Stage 3b: when the 24h customer-service window is closed, disable the
+ * Stage 3b: when nothing can be sent to the customer any more, disable the
  * reply triggers client-side. Advisory only -- see the "Honesty boundary"
  * section of dev-notes/specs/2026-07-28-kapso-whatsapp-design.md; the real
  * enforcement stays with Meta, and a stale page's send still fails loudly
  * into the existing red line item.
  *
+ * F1 revision (whole-stage review, CRITICAL): blocking is keyed on
+ * `[data-kwa-block-reply]`, NOT `[data-kwa-window-closed]`. The two used to
+ * be the same marker, which meant every closed WhatsApp window blocked
+ * Reply outright -- including a closed 102 conversation whose customer has
+ * an email on file, where the agent can and should still be able to click
+ * Reply and send email through the Stage 4 picker (which renders INSIDE
+ * `.conv-reply-block` -- see below -- so a stale blocker there made the
+ * picker itself unreachable, defeating the email escape hatch entirely).
+ * `data-kwa-block-reply` is emitted by window_banner.blade.php only when
+ * the provider's `$blockReply` is true (window closed AND no customer
+ * email -- the exact same predicate as the server-side C1
+ * conversation.reply_button.enabled filter, so the two can never
+ * disagree). `data-kwa-window-closed` still exists and is still read below
+ * -- but only for pill-colouring and as the co-attribute the template
+ * picker's own marker (`data-kwa-templates-url`) happens to sit next to; it
+ * no longer implies blocking by itself.
+ *
  * Belt-and-braces: core's own conversation.reply_button.enabled filter
  * (Providers/KapsoWhatsAppServiceProvider.php) already removes `.conv-reply`
- * from the DOM entirely on a closed window, so most of what follows exists
- * only for whatever that server-side filter cannot reach -- e.g. this
- * script running against a page that was already rendered before the
+ * from the DOM entirely once nothing can be sent, so most of what follows
+ * exists only for whatever that server-side filter cannot reach -- e.g.
+ * this script running against a page that was already rendered before the
  * window closed.
  *
  * Vanilla JS, no jQuery dependency for the guard itself, even though this
@@ -31,8 +48,11 @@
  * paths.
  */
 document.addEventListener('DOMContentLoaded', function () {
-    var closed = !!document.querySelector('[data-kwa-window-closed]');
-    var open   = !!document.querySelector('[data-kwa-window-open]');
+    var closed      = !!document.querySelector('[data-kwa-window-closed]');
+    var open        = !!document.querySelector('[data-kwa-window-open]');
+    // F1: the reply-blocking authority -- see the file docblock above for
+    // why this is a separate marker from `closed`.
+    var blockReply  = !!document.querySelector('[data-kwa-block-reply]');
 
     // Colour the channel pill by window state. The pill is CORE markup
     // (view.blade.php's .fs-tag.fs-tag-md next to the Chat Mode button) with
@@ -387,7 +407,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    if (!closed) {
+    if (!blockReply) {
         return;
     }
 
