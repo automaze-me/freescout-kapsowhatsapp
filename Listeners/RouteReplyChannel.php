@@ -37,15 +37,29 @@ class RouteReplyChannel
      * immediately AFTER, so setMeta() here needs no save() of its own; see
      * the Task 2 report for the empirical verification of that ordering).
      *
-     * Bails (writes nothing) unless ALL of: the thread is a TYPE_MESSAGE
-     * (never TYPE_NOTE, TYPE_CUSTOMER, or anything else -- a note is never
-     * sent to the customer on any channel, so a channel choice on one is
-     * meaningless); the posted `kwa_channel` value is exactly one of
+     * On a non-TYPE_MESSAGE thread (TYPE_NOTE, TYPE_CUSTOMER, ...) this
+     * bails writing NOTHING -- never even a clear -- because such a thread
+     * never carries this meta key in the first place: a note is never sent
+     * to the customer on any channel, so a channel choice on one is
+     * meaningless.
+     *
+     * On a TYPE_MESSAGE thread, meta is written only when ALL of: the
+     * posted `kwa_channel` value is exactly one of
      * ChannelChoice::CHANNEL_WHATSAPP / CHANNEL_EMAIL (never coerced --
      * 'sms', an array, or a missing field are all rejected outright); and
      * ChannelChoice says that specific channel is actually available on the
      * thread's conversation (a forged/stale field can never park an
-     * unreachable channel in meta). Absence of meta afterwards means
+     * unreachable channel in meta). Anything else -- absent, invalid, or
+     * unavailable -- explicitly CLEARS the meta key (whole-stage review,
+     * F4) rather than leaving whatever was already there. Two things
+     * depend on the clear, not a bare no-op: an agent re-sending after Undo
+     * must not silently inherit an earlier choice made on that same thread
+     * row (absence = native must hold on re-sends); and core's own
+     * multi-recipient copy path (ConversationsController.php:1316)
+     * replicates $thread -- meta included -- into $thread_copy BEFORE this
+     * hook re-fires on the copy at :1335, so an invalid/unavailable choice
+     * on the copy must erase the value it inherited from the original
+     * thread rather than silently keep it. Absence of meta afterwards means
      * "native": intercept() below then leaves core entirely untouched.
      */
     public static function capture(Thread $thread, $request)
@@ -56,25 +70,21 @@ class RouteReplyChannel
 
         $value = $request->input('kwa_channel');
 
-        if ($value !== ChannelChoice::CHANNEL_WHATSAPP && $value !== ChannelChoice::CHANNEL_EMAIL) {
-            return;
+        if ($value === ChannelChoice::CHANNEL_WHATSAPP || $value === ChannelChoice::CHANNEL_EMAIL) {
+            $conversation = Conversation::find($thread->conversation_id);
+
+            $available = $conversation && ($value === ChannelChoice::CHANNEL_WHATSAPP
+                ? ChannelChoice::whatsappAvailable($conversation)
+                : ChannelChoice::emailAvailable($conversation));
+
+            if ($available) {
+                $thread->setMeta(KapsoMessage::THREAD_META_CHANNEL, $value);
+
+                return;
+            }
         }
 
-        $conversation = Conversation::find($thread->conversation_id);
-
-        if (!$conversation) {
-            return;
-        }
-
-        $available = $value === ChannelChoice::CHANNEL_WHATSAPP
-            ? ChannelChoice::whatsappAvailable($conversation)
-            : ChannelChoice::emailAvailable($conversation);
-
-        if (!$available) {
-            return;
-        }
-
-        $thread->setMeta(KapsoMessage::THREAD_META_CHANNEL, $value);
+        $thread->setMeta(KapsoMessage::THREAD_META_CHANNEL, null);
     }
 
     /**
@@ -82,7 +92,7 @@ class RouteReplyChannel
      * constants; null otherwise (including "no meta at all"), which
      * intercept() below treats as "behave natively".
      */
-    public static function effectiveChannel(Conversation $conversation, Thread $thread): ?string
+    public static function effectiveChannel(Thread $thread): ?string
     {
         $value = $thread->getMeta(KapsoMessage::THREAD_META_CHANNEL);
 
@@ -126,7 +136,7 @@ class RouteReplyChannel
             return $skip;
         }
 
-        $channel = self::effectiveChannel($conversation, $thread);
+        $channel = self::effectiveChannel($thread);
 
         if ($channel === null) {
             return $skip;
@@ -168,9 +178,13 @@ class RouteReplyChannel
 
             // Replicates core's own dispatch verbatim
             // (SendReplyToCustomer.php:110-112). The reply-to-other-customer
-            // nuance core applies there (thread->getToArray()) does not
-            // arise here: a chat-conversation thread carries no To header,
-            // so the recipient is always the conversation's own customer.
+            // nuance core applies there (thread->getToArray()) resolves to
+            // the same recipient here rather than not arising at all: a
+            // chat reply's To -- set whenever conversation.customer_email is
+            // non-empty (ConversationsController.php:1015) -- is the
+            // conversation customer's own address, so core's override
+            // either does not trigger or lands on the same customer
+            // (whole-stage review, F9).
             $delay = \Eventy::filter(
                 'conversation.send_reply_to_customer_delay',
                 now()->addSeconds(Conversation::UNDO_TIMOUT),

@@ -150,9 +150,20 @@
     margin-right: 4px;
 }
 
-.kwa-channel-picker input[type="radio"]:disabled + * ,
+/**
+ * F8 (whole-stage review): used to be a sibling-combinator pair
+ * (`input:disabled + *`) reaching sideways to mute the WhatsApp label text
+ * next to a disabled radio. Replaced by server-rendered muting instead --
+ * channel_picker.blade.php now echoes `text-muted` onto the label itself
+ * when the window is closed, which is more robust than a `+ *` selector
+ * that silently stops matching the moment the markup order changes (e.g.
+ * F7's fix, which moved the window-hint span to a DIFFERENT sibling
+ * position). Only the input's own dimming remains a plain CSS rule -- there
+ * is no server-rendered equivalent for "this element is disabled" that
+ * would be simpler than the browser's own :disabled selector.
+ */
 .kwa-channel-picker input[type="radio"]:disabled {
-    opacity: 0.5;
+    opacity: .65;
 }
 
 .kwa-channel-window-hint {
@@ -173,7 +184,17 @@
  * `.conv-note-block .conv-recipient` etc.): a plain CSS rule keyed off the
  * ancestor class core's own JS toggles, no extra JS of this module's own
  * needed.
+ *
+ * F3 (whole-stage review): same reasoning for Forward -- core's own
+ * showForwardForm() adds `.conv-forward-block` to the same reply block
+ * element (public/js/main.js:4475) when the agent switches to Forward mode,
+ * and a forward is a brand-new outbound email to an address of the agent's
+ * choosing, not a reply to this conversation's own customer on either
+ * channel -- the picker's choice has no meaning there either, and without
+ * this rule it stayed visible (and, worse, still copyable into the form by
+ * the submit-time JS) throughout a forward.
  */
-.conv-note-block .kwa-channel-picker {
+.conv-note-block .kwa-channel-picker,
+.conv-forward-block .kwa-channel-picker {
     display: none;
 }

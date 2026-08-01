@@ -217,4 +217,39 @@ class ChannelPickerViewTest extends TestCase
         $this->assertStringNotContainsString('data-kwa-send-url', $waHtml);
         $this->assertStringNotContainsString('kwa-send-template-btn', $waHtml);
     }
+
+    /**
+     * F5 (whole-stage review, MINOR): a closed, non-102 conversation with
+     * WhatsApp history but no customer email is otherwise a dead end --
+     * pickerAvailable() needs both legs so the normal picker never renders,
+     * the window banner stays channel-102-only per spec, and the revised C1
+     * filter correctly removes the Reply button because nothing free-form
+     * can send -- yet the template endpoints would still happily serve this
+     * conversation. renderChannelPicker() must fall back to a
+     * template-only render here: the 3c transport attributes and the
+     * "Send a template…" button, but no radios (there is nothing left to
+     * pick between). An open window on the same shape has no template leg
+     * either, so it renders nothing at all.
+     */
+    public function test_a_closed_non102_conversation_with_no_email_gets_a_template_only_picker()
+    {
+        $account         = $this->makeAccount();
+        $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
+
+        $closed = $this->makeConversation($account, 1, $noEmailCustomer);
+        $this->seedInbound($account, $closed, '+491777777777', null, now()->subHours(30), 'wamid.PICK7');
+
+        $closedHtml = $this->renderPicker($closed);
+        $this->assertStringContainsString('data-kwa-templates-url', $closedHtml);
+        $this->assertStringContainsString('data-kwa-send-url', $closedHtml);
+        $this->assertStringContainsString('kwa-send-template-btn', $closedHtml);
+        $this->assertStringNotContainsString('name="kwa_channel"', $closedHtml);
+
+        $open = $this->makeConversation($account, 1, $noEmailCustomer);
+        $this->seedInbound($account, $open, '+491778888888', null, now()->subHour(), 'wamid.PICK8');
+
+        $openHtml = $this->renderPicker($open);
+        $this->assertStringNotContainsString('kwa-channel-picker', $openHtml);
+        $this->assertStringNotContainsString('data-kwa-templates-url', $openHtml);
+    }
 }

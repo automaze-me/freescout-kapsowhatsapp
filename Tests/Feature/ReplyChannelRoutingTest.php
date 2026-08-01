@@ -185,6 +185,36 @@ class ReplyChannelRoutingTest extends TestCase
     }
 
     /**
+     * F4 (whole-stage review, MINOR): capture() must not merely no-op when
+     * the posted value is absent, invalid, or unavailable on a TYPE_MESSAGE
+     * thread that already carries meta from an earlier save -- it must
+     * actively clear it. Two things depend on the clear rather than a bare
+     * no-op: an agent re-sending after Undo must not silently inherit an
+     * earlier choice made on that same thread row (absence = native must
+     * hold), and core's own multi-recipient copy path
+     * (ConversationsController.php:1316) replicates $thread -- meta
+     * included -- into $thread_copy before this hook re-fires on the copy,
+     * so a copy whose choice turns out unavailable must not silently keep
+     * the ORIGINAL thread's answer.
+     */
+    public function test_capture_clears_stale_meta_when_the_posted_value_is_absent()
+    {
+        $account  = $this->makeAccount();
+        $customer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
+
+        $conversation = $this->makeConversation($account, 1, $customer);
+        $this->seedInbound($account, $conversation);
+
+        $thread = $this->makeMessageThread($conversation);
+        \Eventy::action('thread.before_save_from_request', $thread, $this->requestWithChannel(ChannelChoice::CHANNEL_WHATSAPP));
+        $this->assertSame(ChannelChoice::CHANNEL_WHATSAPP, $thread->getMeta(KapsoMessage::THREAD_META_CHANNEL));
+
+        \Eventy::action('thread.before_save_from_request', $thread, Request::create('/conversations/send-reply', 'POST', []));
+
+        $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_CHANNEL));
+    }
+
+    /**
      * effective == native (or no meta at all) must return false and
      * dispatch NOTHING -- core proceeds completely untouched, whether that
      * means its full email path or (for a channel-102 conversation) falling

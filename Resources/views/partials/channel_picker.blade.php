@@ -24,23 +24,35 @@
     what makes it reliable regardless of script/handler registration order.
 
     Variables, all provided by
-    KapsoWhatsAppServiceProvider::renderChannelPicker():
+    KapsoWhatsAppServiceProvider::renderChannelPicker() (or its F5 sibling
+    renderTemplateOnlyPicker() for $templateOnly -- see below):
       $conversation      the conversation being replied to.
-      $default            'whatsapp'|'email' (ChannelChoice::defaultChannel()'s
+      $default            'whatsapp'|'email'|null (ChannelChoice::defaultChannel()'s
                            exact return values -- literal strings are used
                            below rather than importing the class, the same
                            choice window_banner.blade.php makes for its own
-                           constants).
+                           constants; null when $templateOnly, since there
+                           is no radio to default).
       $windowOpen         bool -- whether WhatsApp free-form sending is
                            currently legal on this conversation.
       $windowHint         string, already __()'d ('' only in the
                            unreachable no-window-state case -- see the
                            provider).
-      $templateTransport  bool -- true only for a CLOSED window on a
-                           NON-102 conversation. A channel-102 conversation
-                           already carries the Stage 3c template control on
-                           its closed banner (window_banner.blade.php) --
-                           never both, per spec.
+      $templateTransport  bool -- true for a CLOSED window on a NON-102
+                           conversation, whether or not both channels are
+                           pickable. A channel-102 conversation already
+                           carries the Stage 3c template control on its
+                           closed banner (window_banner.blade.php) -- never
+                           both, per spec.
+      $templateOnly       bool (whole-stage review, F5) -- true when
+                           ChannelChoice::pickerAvailable() said no (the
+                           conversation has no email leg) but there is
+                           still WhatsApp history, a closed window, and a
+                           non-102 channel, so the template send is the
+                           ONLY thing left an agent can do here. Suppresses
+                           the "Send via" label and both radios; nothing
+                           to pick between when only one of the two
+                           channels is even theoretically reachable.
 --}}
 @php
     // The $kwaPickerAttrs idiom, reused verbatim from window_banner.blade.php
@@ -66,28 +78,48 @@
 {{-- data-kwa-picker="1" is what js/kapsowhatsapp.js's submit-time copy
      looks the picker up by -- deliberately not a class-based lookup, same
      data-attribute-as-transport convention the template picker already
-     uses. --}}
-<div class="kwa-channel-picker form-inline" data-kwa-picker="1"
+     uses. Omitted when $templateOnly: there is no radio for that JS to
+     ever find checked here, so marking this element as "the picker" would
+     be misleading -- a harmless no-op either way (kwaCopyChannelChoiceIntoForm()
+     bails on a missing checked radio regardless), but the marker is meant
+     to say "a channel choice lives here", which is exactly what is not
+     true in this mode. --}}
+<div class="kwa-channel-picker form-inline"@if (empty($templateOnly)) data-kwa-picker="1"@endif
      @foreach ($kwaPickerAttrs as $kwaAttr => $kwaValue) {{ $kwaAttr }}="{{ $kwaValue }}" @endforeach>
-    <span class="text-help">{{ __('Send via') }}:</span>
-    <label class="radio-inline">
-        <input type="radio" name="kwa_channel" value="email"{{ $default === 'email' ? ' checked' : '' }}>
-        {{ __('Email') }}
-    </label>
-    <label class="radio-inline">
-        {{-- Conditional attributes via echoes, never word-adjacent inline
-             @if -- Blade's directive pattern (\B@) never matches an @ that
-             directly follows a word character, so e.g. `checked@if(...)`
-             would ship literally while its @endif still compiled
-             (unbalancing the outer conditional; see
-             window_banner.blade.php's own comment for the real parse error
-             this once caused). --}}
-        <input type="radio" name="kwa_channel" value="whatsapp"{{ $default === 'whatsapp' ? ' checked' : '' }}{{ $windowOpen ? '' : ' disabled' }}>
-        {{ __('WhatsApp') }}
+    @if (empty($templateOnly))
+        <span class="text-help">{{ __('Send via') }}:</span>
+        <label class="radio-inline">
+            <input type="radio" name="kwa_channel" value="email"{{ $default === 'email' ? ' checked' : '' }}>
+            {{ __('Email') }}
+        </label>
+        {{-- F8 (whole-stage review): the WhatsApp label's own muted state is
+             now server-rendered (text-muted, echoed only when the window is
+             closed) rather than leaned on a CSS `input:disabled + *`
+             sibling-selector -- see Public/css/kapsowhatsapp.css's comment
+             on the rule this replaced. --}}
+        <label class="radio-inline{{ $windowOpen ? '' : ' text-muted' }}">
+            {{-- Conditional attributes via echoes, never word-adjacent inline
+                 @if -- Blade's directive pattern (\B@) never matches an @ that
+                 directly follows a word character, so e.g. `checked@if(...)`
+                 would ship literally while its @endif still compiled
+                 (unbalancing the outer conditional; see
+                 window_banner.blade.php's own comment for the real parse error
+                 this once caused). --}}
+            <input type="radio" name="kwa_channel" value="whatsapp"{{ $default === 'whatsapp' ? ' checked' : '' }}{{ $windowOpen ? '' : ' disabled' }}>
+            {{ __('WhatsApp') }}
+        </label>
+        {{-- F7 (whole-stage review): moved OUTSIDE the WhatsApp <label> --
+             it used to sit inside it, which meant clicking the hint text
+             selected the WhatsApp radio underneath it (a <label> forwards
+             any click on its content to the control it wraps). Placed
+             immediately after the label instead, so it reads in the same
+             spot visually with no such side effect. --}}
         @if ($windowHint)
             <span class="text-help kwa-channel-window-hint">{{ $windowHint }}</span>
         @endif
-    </label>
+    @elseif ($windowHint)
+        <span class="text-help kwa-channel-window-hint">{{ $windowHint }}</span>
+    @endif
     @if ($templateTransport)
         <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
     @endif

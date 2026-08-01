@@ -266,11 +266,14 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
      * ChannelChoice::pickerAvailable($conversation) -- both channels must be
      * genuinely reachable, or there is nothing to pick between (this is
      * conversation-scoped, never customer-scoped -- see
-     * Services/ChannelChoice.php's class docblock).
+     * Services/ChannelChoice.php's class docblock) -- EXCEPT for the
+     * template-only fallback below (whole-stage review, F5).
      */
     protected static function renderChannelPicker($conversation)
     {
         if (!\Modules\KapsoWhatsApp\Services\ChannelChoice::pickerAvailable($conversation)) {
+            self::renderTemplateOnlyPicker($conversation);
+
             return;
         }
 
@@ -303,6 +306,52 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             'windowOpen'        => $windowOpen,
             'windowHint'        => $windowHint,
             'templateTransport' => $templateTransport,
+            'templateOnly'      => false,
+        ])->render();
+    }
+
+    /**
+     * F5 (whole-stage review, MINOR): a closed, non-102 conversation with
+     * WhatsApp history but no customer email is otherwise a dead end --
+     * pickerAvailable() (above) refuses it because there is no email leg,
+     * renderWindowBanner() refuses it because it is not channel-102, and
+     * the revised C1 conversation.reply_button.enabled filter correctly
+     * removes the Reply button because nothing free-form can send -- yet
+     * TemplatesController's endpoints would still happily serve this
+     * conversation (its guard is "has WhatsApp history", which this
+     * conversation satisfies). Render the picker partial in template-only
+     * mode instead: the 3c transport attributes, the window-closed hint,
+     * and the "Send a template…" button, but no radios -- there is nothing
+     * left to pick between. Channel-102 conversations never reach here for
+     * that reason: their closed banner (renderWindowBanner()) already
+     * carries the button, and pickerAvailable() only ever fails them on the
+     * missing-email leg -- same shape, but the banner already covers it.
+     */
+    protected static function renderTemplateOnlyPicker($conversation)
+    {
+        if (!\Modules\KapsoWhatsApp\Services\ChannelChoice::whatsappAvailable($conversation)) {
+            return;
+        }
+
+        if ((int) $conversation->channel === \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL) {
+            return;
+        }
+
+        $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation);
+
+        if (!$state || $state['open']) {
+            return;
+        }
+
+        $windowHint = __('window closed :relative', ['relative' => \App\User::dateDiffForHumans($state['closes_at']->copy())]);
+
+        echo view('kapsowhatsapp::partials/channel_picker', [
+            'conversation'      => $conversation,
+            'default'           => null,
+            'windowOpen'        => false,
+            'windowHint'        => $windowHint,
+            'templateTransport' => true,
+            'templateOnly'      => true,
         ])->render();
     }
 }
