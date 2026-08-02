@@ -107,6 +107,11 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // @action('thread.meta', $thread, $loop, $threads, $conversation,
         // $mailbox) (resources/views/conversations/partials/thread.blade.php)
         // -- five args, of which only $thread is needed here.
+        // The per-message channel chip next to the sender's name -- see
+        // Services/ThreadChannelBadge.php. Core fires this hook inside
+        // .thread-person, right after the name (thread.blade.php:102).
+        \Eventy::addAction('thread.after_person_action', [\Modules\KapsoWhatsApp\Services\ThreadChannelBadge::class, 'render'], 20, 5);
+
         \Eventy::addAction('thread.meta', function ($thread) {
             // One status line, highest state wins -- like WhatsApp's own
             // ticks: read (blue double tick) > delivered (double tick) >

@@ -173,6 +173,24 @@
 }
 
 /**
+ * The per-message channel chip next to the sender's name (rendered by
+ * Services/ThreadChannelBadge.php at thread.after_person_action):
+ * WhatsApp's brand green, sized to sit quietly beside the bold name.
+ * Only WhatsApp-carried messages get one -- absence means email.
+ */
+.kwa-channel-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    background-color: #25d366;
+    color: #fff;
+    font-size: 11px;
+    line-height: 16px;
+    vertical-align: 2px;
+}
+
+/**
  * WhatsApp-style ticks on the reply's thread-meta remark
  * (ProcessDeliveryReceipt + the thread.meta hook): a double tick is two
  * overlapping glyphicons, and the read state turns them WhatsApp's own
