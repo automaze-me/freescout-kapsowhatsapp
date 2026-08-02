@@ -34,7 +34,8 @@ registers and monitors its own Kapso webhook so no manual setup step is needed.
 FreeScout must be reachable from the public internet for Kapso to deliver anything. If it is not,
 the accounts page says so.
 
-The **Webhook** column shows what Kapso currently thinks. Kapso pauses a webhook automatically
+The **Webhook** column shows the registration status as last reported by Kapso's API — not a
+local guess, but also only as fresh as the last check. Kapso pauses a webhook automatically
 after a run of failed deliveries and never resumes it on its own, so a paused webhook shows up
 here as *Paused by Kapso*, together with the HTTP status your install returned, and a **Re-enable**
 button. Registering again is always safe in the sense that it adopts the existing webhook rather
