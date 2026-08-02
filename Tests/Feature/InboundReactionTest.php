@@ -87,7 +87,12 @@ class InboundReactionTest extends TestCase
         $this->assertSame($threadsBefore, Conversation::findOrFail($conversationId)->threads()->count(),
             'a reaction must not create a new thread');
 
-        $this->assertStringContainsString('👍', Thread::findOrFail($targetThreadId)->body);
+        // User feedback (2026-08-02): the reaction is thread META, rendered
+        // as a remark under the message like "Sent via WhatsApp" -- never
+        // appended to the body, where it read as part of the message text.
+        $target = Thread::findOrFail($targetThreadId);
+        $this->assertSame('👍', $target->getMeta(KapsoMessage::THREAD_META_REACTION));
+        $this->assertStringNotContainsString('👍', $target->body, 'the body must stay untouched');
         $this->assertSame($targetThreadId, KapsoMessage::where('wamid', 'wamid.reaction')->value('thread_id'));
 
         // The row-kind marker: the reaction's own KapsoMessage row must be
@@ -115,10 +120,8 @@ class InboundReactionTest extends TestCase
     }
 
     /**
-     * An empty `emoji` means the customer removed their reaction. The
-     * previous marker must be stripped from the thread body, not merely
-     * overwritten with an empty one that would still leave the wrapper
-     * element behind.
+     * An empty `emoji` means the customer removed their reaction: the meta
+     * is cleared, so the remark under the message disappears.
      */
     public function test_a_reaction_with_empty_emoji_removes_the_marker()
     {
@@ -129,12 +132,12 @@ class InboundReactionTest extends TestCase
         $targetThreadId = KapsoMessage::where('wamid', 'wamid.target')->value('thread_id');
 
         (new ProcessInboundMessage($account->id, $this->reactionPayload('wamid.target', 'wamid.reaction-1', '👍')))->handle();
-        $this->assertStringContainsString('kapsowhatsapp-reaction', Thread::findOrFail($targetThreadId)->body);
+        $this->assertSame('👍', Thread::findOrFail($targetThreadId)->getMeta(KapsoMessage::THREAD_META_REACTION));
 
         (new ProcessInboundMessage($account->id, $this->reactionPayload('wamid.target', 'wamid.reaction-2', '')))->handle();
 
-        $this->assertStringNotContainsString('kapsowhatsapp-reaction', Thread::findOrFail($targetThreadId)->body,
-            'an empty-emoji reaction must remove the marker rather than leave it in place');
+        $this->assertNull(Thread::findOrFail($targetThreadId)->getMeta(KapsoMessage::THREAD_META_REACTION),
+            'an empty-emoji reaction must clear the stored reaction');
     }
 
     /**
@@ -153,13 +156,65 @@ class InboundReactionTest extends TestCase
         (new ProcessInboundMessage($account->id, $this->reactionPayload('wamid.target', 'wamid.reaction-1', '👍')))->handle();
         (new ProcessInboundMessage($account->id, $this->reactionPayload('wamid.target', 'wamid.reaction-2', '😂')))->handle();
 
-        $body = Thread::findOrFail($targetThreadId)->body;
+        $this->assertSame('😂', Thread::findOrFail($targetThreadId)->getMeta(KapsoMessage::THREAD_META_REACTION),
+            'known limitation: only the most recent reaction is kept, a single slot per thread');
+    }
 
-        $this->assertStringNotContainsString('👍', $body,
-            'known limitation: only the most recent reaction is kept, a single marker slot per thread');
-        $this->assertStringContainsString('😂', $body);
-        $this->assertSame(1, substr_count($body, 'kapsowhatsapp-reaction'),
-            'only one reaction marker element should ever be present at a time');
+    /**
+     * Threads annotated by the PRE-meta implementation carry the reaction
+     * as a <p class="kapsowhatsapp-reaction"> INSIDE the body. The next
+     * reaction event for such a thread migrates it: body marker stripped,
+     * meta takes over. (Bodies of threads the customer never re-reacts to
+     * keep their legacy marker -- accepted, no data migration.)
+     */
+    public function test_a_legacy_body_marker_is_stripped_when_the_reaction_changes()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->textPayload()))->handle();
+
+        $targetThreadId = KapsoMessage::where('wamid', 'wamid.target')->value('thread_id');
+        $target         = Thread::findOrFail($targetThreadId);
+        $target->body   = $target->body.'<p class="kapsowhatsapp-reaction">Reaction: 👍</p>';
+        $target->save();
+
+        (new ProcessInboundMessage($account->id, $this->reactionPayload('wamid.target', 'wamid.reaction-1', '😂')))->handle();
+
+        $target = Thread::findOrFail($targetThreadId);
+        $this->assertStringNotContainsString('kapsowhatsapp-reaction', $target->body,
+            'the legacy in-body marker must be stripped once meta takes over');
+        $this->assertSame('😂', $target->getMeta(KapsoMessage::THREAD_META_REACTION));
+    }
+
+    /**
+     * The remark renders through core's thread.meta hook exactly like the
+     * "Sent via WhatsApp" marker (same capture idiom as SentMarkerTest).
+     */
+    public function test_the_reaction_renders_as_a_thread_meta_remark()
+    {
+        $account = $this->makeAccount();
+
+        (new ProcessInboundMessage($account->id, $this->textPayload()))->handle();
+
+        $targetThreadId = KapsoMessage::where('wamid', 'wamid.target')->value('thread_id');
+        $conversation   = Conversation::findOrFail(KapsoMessage::where('wamid', 'wamid.target')->value('conversation_id'));
+
+        $before = $this->renderThreadMeta(Thread::findOrFail($targetThreadId), $conversation);
+        $this->assertStringNotContainsString('kwa-thread-reaction', $before);
+
+        (new ProcessInboundMessage($account->id, $this->reactionPayload()))->handle();
+
+        $html = $this->renderThreadMeta(Thread::findOrFail($targetThreadId), $conversation);
+        $this->assertStringContainsString('kwa-thread-reaction', $html);
+        $this->assertStringContainsString('👍', $html);
+    }
+
+    protected function renderThreadMeta(Thread $thread, Conversation $conversation): string
+    {
+        ob_start();
+        \Eventy::action('thread.meta', $thread, null, collect([$thread]), $conversation, $conversation->mailbox);
+
+        return ob_get_clean();
     }
 
     /**

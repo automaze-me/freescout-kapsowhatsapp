@@ -353,26 +353,29 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
-        // preg_replace() with the `u` modifier returns null (not the
-        // original string) when its subject isn't valid UTF-8, which would
-        // otherwise blank the thread body on save. $thread->body here is not
-        // always our own escaped HTML any more: since Task 4,
-        // SendReplyMessage::claimAndSend() also sets `thread_id` (and later
-        // `wamid`) on rows pointing at agent-composed reply threads, so a
-        // reaction to an agent's WhatsApp reply resolves here, via
-        // threadForWamid(), to real WYSIWYG editor HTML. Still safe: this
-        // guard's original-body fallback, plus the e() on the emoji below,
-        // hold regardless of which kind of thread this is -- but the safety
-        // no longer rests on "the body is always our own escaped HTML", it
-        // rests on these guards. See the Task 6 review for the full trace.
-        $stripped = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
-        $stripped = $stripped === null ? $thread->body : $stripped;
+        // The reaction lives in thread META (rendered as a remark under the
+        // message via the `thread.meta` hook, like "Sent via WhatsApp") --
+        // never in the body, where it read as part of the message text
+        // (user feedback 2026-08-02). One slot: WhatsApp allows one
+        // reaction per user per message; a replacement overwrites, an empty
+        // emoji clears.
+        $thread->setMeta(KapsoMessage::THREAD_META_REACTION, $emoji === '' ? null : $emoji);
 
-        if ($emoji === '') {
-            // Removing a reaction: strip any previous marker.
+        // Transitional: threads annotated by the pre-meta implementation
+        // carry the reaction as a <p class="kapsowhatsapp-reaction"> INSIDE
+        // the body -- strip it the next time that message's reaction
+        // changes, so meta and body can never show two reactions at once.
+        // (Bodies nobody re-reacts to keep their legacy marker; accepted,
+        // no data migration.) preg_replace() with the `u` modifier returns
+        // null (not the original string) when its subject isn't valid
+        // UTF-8, which would otherwise blank the body on save -- and the
+        // body is not always our own escaped HTML (a reaction to an
+        // agent's WhatsApp reply resolves, via threadForWamid(), to real
+        // WYSIWYG editor HTML), hence the fallback guard.
+        $stripped = preg_replace('#<p class="kapsowhatsapp-reaction">.*?</p>#u', '', $thread->body);
+
+        if ($stripped !== null && $stripped !== $thread->body) {
             $thread->body = $stripped;
-        } else {
-            $thread->body = $stripped.'<p class="kapsowhatsapp-reaction">'.__('Reaction:').' '.e($emoji).'</p>';
         }
 
         $thread->save();

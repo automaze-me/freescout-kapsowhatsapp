@@ -66,6 +66,16 @@ class KapsoMessage extends Model
      */
     const THREAD_META_CHANNEL = 'kapsowhatsapp_channel';
 
+    /**
+     * Thread::meta key holding the customer's current reaction emoji for
+     * the message this thread carries (single slot: WhatsApp allows one
+     * reaction per user per message; a new one replaces it, an empty one
+     * removes it). Rendered as a remark under the message via the
+     * `thread.meta` hook -- never written into the thread body, where it
+     * read as part of the message text (user feedback 2026-08-02).
+     */
+    const THREAD_META_REACTION = 'kapsowhatsapp_reaction';
+
     const SEND_STATE_SENDING  = 'sending';
     const SEND_STATE_ACCEPTED = 'accepted';
     const SEND_STATE_FAILED   = 'failed';

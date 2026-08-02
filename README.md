@@ -4,7 +4,7 @@ WhatsApp as a communication channel for [FreeScout](https://freescout.net), via 
 [Kapso](https://kapso.ai) API.
 
 This module handles both directions: WhatsApp messages become FreeScout conversations and
-threads — with media attachments, incoming reactions (shown on the message they refer to) and
+threads — with media attachments, incoming reactions (shown as a remark under the message they refer to) and
 customer identity matching — and replying from FreeScout delivers the reply to WhatsApp. It
 registers and monitors its own Kapso webhook so no manual setup step is needed.
 

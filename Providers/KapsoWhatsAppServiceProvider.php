@@ -111,6 +111,14 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
             if ($thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_SENT_AT)) {
                 echo '<div class="thread-meta"><i class="glyphicon glyphicon-ok"></i> '.e(__('Sent via WhatsApp')).'</div>';
             }
+
+            // The customer's reaction to this message, as a remark under it
+            // (user feedback: in the body it read as part of the message).
+            $reaction = $thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_REACTION);
+
+            if (is_string($reaction) && $reaction !== '') {
+                echo '<div class="thread-meta kwa-thread-reaction">'.e($reaction).' '.e(__('Customer reaction')).'</div>';
+            }
         }, 20, 1);
 
         // Stage 3b: the 24h customer-service window banner, above the
