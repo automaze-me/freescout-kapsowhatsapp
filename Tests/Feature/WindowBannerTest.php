@@ -158,7 +158,13 @@ class WindowBannerTest extends TestCase
 
         $this->assertStringContainsString('data-kwa-window-closed', $html);
         $this->assertStringContainsString('this window closed', $html);
-        $this->assertStringContainsString('alert-danger', $html);
+        // User feedback (2026-08-02): NO alert box in normal mode either --
+        // the red channel pill is the closed-state visual in BOTH modes,
+        // and the alert-danger background made the template picker (which
+        // the JS opens inside this element) unreadable pink-on-pink. The
+        // closed state is a quiet red text line + button, like chat mode's.
+        $this->assertStringNotContainsString('alert-danger', $html);
+        $this->assertStringContainsString('kwa-window-closed-block', $html);
         // The block (normal-mode) variants carry kwa-window-status-block:
         // its side margins align them with core's padded subject column
         // (user feedback: the bare status line sat flush on the sidebar

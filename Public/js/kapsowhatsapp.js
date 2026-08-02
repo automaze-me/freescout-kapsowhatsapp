@@ -181,19 +181,25 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             var thisPicker = document.createElement('div');
-            thisPicker.className = 'kwa-template-picker';
+            // Always the bordered standalone panel: since the normal-mode
+            // alert box is gone too (user feedback 2026-08-02 -- the red
+            // pill is the closed-state visual in BOTH modes), every notice
+            // the panel can attach to now sits on the page's white
+            // background, where an unframed form floats ambiguously.
+            thisPicker.className = 'kwa-template-picker kwa-template-picker-standalone';
             thisPicker.textContent = labels.loading;
             if ((' ' + notice.className + ' ').indexOf(' kwa-window-closed-inline ') !== -1) {
                 // Chat mode: the notice is a float sitting to the RIGHT of
                 // the channel pills, so a picker appended inside it would
                 // hang indented mid-row under the hint text. As a sibling
-                // with clear:both (.kwa-template-picker-standalone) it
-                // drops below the whole pill row, aligned with the
-                // content's left edge.
-                thisPicker.className += ' kwa-template-picker-standalone';
+                // with clear:both it drops below the whole pill row,
+                // aligned with the content's left edge.
                 notice.parentNode.insertBefore(thisPicker, notice.nextSibling);
             } else {
-                // Normal mode: inside the alert box, as before.
+                // Normal mode (and the Stage 4 channel picker's template
+                // control): inside the notice, which carries the side
+                // margins that keep the panel aligned with the subject
+                // column.
                 notice.appendChild(thisPicker);
             }
             picker = thisPicker;

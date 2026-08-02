@@ -112,14 +112,21 @@
             <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
         </div>
     @else
-        <div class="alert alert-danger kwa-window-status kwa-window-status-block"
+        {{-- Normal mode (user feedback 2026-08-02, mirroring chat mode's
+            2026-08-01 redesign): no alert box here either -- the JS-coloured
+            red channel pill is the closed-state visual in both modes, and
+            the pink alert background also made the template picker (which
+            the JS opens as a child of this element) pink-on-pink. A quiet
+            red text line -- keeping the fuller sentence, since this row has
+            the width for the "why" -- with the template button beside it;
+            kwa-window-status-block for the side margins that align it with
+            core's padded subject column. --}}
+        <div class="kwa-window-status kwa-window-status-block kwa-window-closed-block"
              @foreach ($kwaPickerAttrs as $kwaAttr => $kwaValue) {{ $kwaAttr }}="{{ $kwaValue }}" @endforeach>
-            {{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
+            <span class="text-danger">{{ __('WhatsApp only allows replies within 24 hours of the customer\'s last message — this window closed :when.', [
                 'when' => \App\User::dateDiffForHumans($state['closes_at']->copy()),
-            ]) }}
-            <div class="kwa-template-picker-toggle">
-                <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
-            </div>
+            ]) }}</span>
+            <button type="button" class="btn btn-default btn-xs kwa-send-template-btn">{{ __('Send a template…') }}</button>
         </div>
     @endif
 @endif

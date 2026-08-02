@@ -15,20 +15,6 @@
 }
 
 /**
- * Stage 3c: spacing only for the "Send a template…" picker
- * (Public/js/kapsowhatsapp.js builds the elements themselves; Bootstrap 3's
- * own .form-control/.btn/.form-group classes already supply everything
- * else). The picker sits inside the closed-window .alert-danger box, so its
- * own text stays readable against that background rather than inheriting
- * Bootstrap's default (dark-on-white) form control styling assumptions --
- * only the parts that would otherwise clash (labels, the muted/error status
- * line) are touched.
- */
-.kwa-template-picker-toggle {
-    margin-top: 8px;
-}
-
-/**
  * Normal mode only (the banner rendered on after_subject_block as its own
  * row): core's subject/pills column is inset 20px from the content edge
  * (measured live -- .conv-subjtext at x=280 against the container's
@@ -40,6 +26,10 @@
 .kwa-window-status-block {
     margin-left: 20px;
     margin-right: 20px;
+    /* Breathing room against the horizontal rule that closes the subject
+       block right below this line (user feedback 2026-08-02: the status
+       line sat directly on it). */
+    margin-bottom: 10px;
 }
 
 /**
@@ -61,12 +51,23 @@
 }
 
 /**
- * Chat mode's picker: the JS inserts it as a SIBLING after the floated
- * notice (not inside it -- inside, it would hang indented mid-row under
- * the hint text), so clear:both drops it below the whole pill row at the
- * content's left edge. The bordered panel exists because on the page's
- * white background (unlike normal mode's pink alert box) an unframed form
- * would float ambiguously in the subject area.
+ * Normal mode's closed state (user feedback 2026-08-02, mirroring the
+ * chat-mode redesign): the red pill carries the closed-state visual in
+ * both modes, so this too is a quiet text line, with the template button
+ * riding beside the sentence.
+ */
+.kwa-window-closed-block .kwa-send-template-btn {
+    margin-left: 8px;
+}
+
+/**
+ * The template panel -- ALWAYS the bordered standalone surface now that no
+ * variant renders inside an alert box (both closed notices sit on the
+ * page's white background, where an unframed form floats ambiguously). In
+ * chat mode the JS inserts it as a SIBLING after the floated notice (inside
+ * the float it would hang indented mid-row), so clear:both drops it below
+ * the pill row; in normal mode it is appended inside the notice, whose
+ * kwa-window-status-block margins keep it aligned with the subject column.
  */
 .kwa-template-picker-standalone {
     clear: both;
@@ -81,17 +82,6 @@
     background-color: #fafafa;
 }
 
-.kwa-template-picker-standalone .kwa-template-preview {
-    background-color: #fff;
-    border: 1px solid #eee;
-}
-
-/* The darker #843534 further down is tuned for the pink alert background;
-   on the standalone panel Bootstrap's own danger tone reads better. */
-.kwa-template-picker-standalone .kwa-template-status.text-danger {
-    color: #a94442;
-}
-
 .kwa-template-picker {
     margin-top: 10px;
     max-width: 420px;
@@ -100,7 +90,8 @@
 .kwa-template-picker .kwa-template-preview {
     margin-top: 8px;
     padding: 6px 8px;
-    background-color: rgba(255, 255, 255, 0.6);
+    background-color: #fff;
+    border: 1px solid #eee;
     border-radius: 3px;
     font-style: italic;
 }
@@ -120,10 +111,6 @@
 
 .kwa-template-picker .kwa-template-status {
     margin-top: 6px;
-}
-
-.kwa-template-picker .kwa-template-status.text-danger {
-    color: #843534;
 }
 
 .kwa-template-picker .kwa-template-actions {
