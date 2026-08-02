@@ -272,6 +272,47 @@ document.addEventListener('DOMContentLoaded', function () {
         xhr.send(body !== null ? body : undefined);
     }
 
+    // Renders WhatsApp-formatted text into a node: newlines survive via the
+    // preview's own white-space:pre-wrap, and WhatsApp's inline marks --
+    // *bold*, _italic_, ~strikethrough~ -- become real <strong>/<em>/<s>
+    // elements so the agent reads the template the way the customer will
+    // (user feedback 2026-08-02: the raw body read as one run-together
+    // blob). Built exclusively from createTextNode/createElement +
+    // textContent -- the body is API data and must never travel through
+    // innerHTML. A mark only counts when it wraps non-empty text on ONE
+    // line (no \n inside), matching WhatsApp's own conservative parsing;
+    // anything unmatched stays literal. String.split with a capturing
+    // group keeps the delimiters in the result (fine on IE11 -- the
+    // capture-dropping bug died with IE8's JScript).
+    function kwaRenderWhatsAppText(node, text) {
+        node.innerHTML = '';
+
+        var parts = String(text).split(/(\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~)/g);
+
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (!part) {
+                continue;
+            }
+
+            var tag = null;
+            if (part.length > 2) {
+                var first = part.charAt(0);
+                if (first === part.charAt(part.length - 1)) {
+                    tag = first === '*' ? 'strong' : (first === '_' ? 'em' : (first === '~' ? 's' : null));
+                }
+            }
+
+            if (tag) {
+                var el = document.createElement(tag);
+                el.textContent = part.slice(1, -1);
+                node.appendChild(el);
+            } else {
+                node.appendChild(document.createTextNode(part));
+            }
+        }
+    }
+
     function kwaStatusNode(text, isError) {
         var node = document.createElement('div');
         node.className = isError ? 'kwa-template-status text-danger' : 'kwa-template-status text-muted';
@@ -349,7 +390,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var renderSelected = function () {
             var template = templates[Number(select.value)];
-            preview.textContent = template.body;
+            kwaRenderWhatsAppText(preview, template.body);
 
             varsContainer.innerHTML = '';
             for (var v = 1; v <= template.variables; v++) {

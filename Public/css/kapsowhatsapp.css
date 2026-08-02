@@ -93,7 +93,14 @@
     background-color: #fff;
     border: 1px solid #eee;
     border-radius: 3px;
-    font-style: italic;
+    /* No blanket font-style:italic any more: the body now renders
+       WhatsApp's own inline marks (see kwaRenderWhatsAppText), and an
+       all-italic preview would swallow the _italic_ ones. */
+    /* Template bodies are multi-paragraph WhatsApp text; without this the
+       \n's collapse and the whole message reads as one run-together blob
+       (user feedback 2026-08-02). textContent + pre-wrap keeps the breaks
+       without any HTML injection surface. */
+    white-space: pre-wrap;
 }
 
 .kwa-template-picker .kwa-template-vars {
