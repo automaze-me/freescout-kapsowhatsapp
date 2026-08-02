@@ -56,14 +56,10 @@ own dashboard.
 
 - **Default country code.** Phone numbers typed locally into FreeScout in national format (a
   single leading trunk zero, e.g. a German number written `0151 12345678`) need a country code to
-  normalise to E.164. Nothing here is specific to one deployment, so this is unset (no code
-  assumed) by default — WhatsApp itself always delivers `message.from`/`message.to` as bare
-  international digits, so this only matters for numbers agents type locally. If your install has
-  customers with locally-typed national-format numbers, set it once via `php artisan tinker`:
-
-  ```php
-  \Option::set('kapsowhatsapp.default_country_code', '49'); // bare digits, no "+"
-  ```
+  normalise to E.164. Set it on **Manage → WhatsApp Accounts** (accepts `49`, `+49` or `0049`).
+  It is unset by default — WhatsApp itself always delivers `message.from`/`message.to` as bare
+  international digits, so this only matters for numbers agents type locally; left empty, the
+  module declines to guess a country rather than risk completing a number wrongly.
 
 ## Replying from FreeScout
 

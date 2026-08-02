@@ -49,6 +49,7 @@ class KapsoWhatsAppController extends Controller
             'webhookUrl'            => $webhookUrl,
             'webhookUrlUnreachable' => WebhookRegistrar::looksUnreachable($webhookUrl),
             'hasApiKey'             => Settings::hasApiKey(),
+            'defaultCountryCode'    => \Modules\KapsoWhatsApp\Services\PhoneNumber::configuredDefaultCountryCode(),
         ]);
     }
 
@@ -87,6 +88,58 @@ class KapsoWhatsAppController extends Controller
 
             \Session::flash('flash_success_floating', __('Kapso API key saved.'));
         }
+
+        return redirect()->route('kapsowhatsapp.settings');
+    }
+
+    /**
+     * The default country code used to complete phone numbers agents type
+     * in national format (PhoneNumber::configuredDefaultCountryCode()'s
+     * backing option) -- a first-class field on the accounts page, not a
+     * tinker incantation. Accepts "49", "+49" or "0049" and stores bare
+     * digits; a code never starts with 0 after the international prefix is
+     * stripped, and ITU codes are at most 4 digits. Blank clears it: the
+     * module then declines to guess a country for national-format numbers,
+     * the documented default.
+     */
+    public function saveDefaultCountryCode(Request $request)
+    {
+        $this->authorizeAdmin();
+
+        $raw = $request->input('default_country_code');
+
+        // A blank submit arrives as NULL, not '' -- core's
+        // ConvertEmptyStringsToNull middleware runs on every web request --
+        // and both mean "clear" here (this admin-only form always carries
+        // the field, so absent-vs-blank needs no distinction).
+        if ($raw === null || (is_string($raw) && trim($raw) === '')) {
+            \Option::set('kapsowhatsapp.default_country_code', '');
+            \Session::flash('flash_success_floating', __('Default country code cleared — national-format numbers will not be completed.'));
+
+            return redirect()->route('kapsowhatsapp.settings');
+        }
+
+        // is_string, never a cast: non-scalar JSON would turn the cast's
+        // "Array to string conversion" warning into a thrown ErrorException
+        // under this app's error_reporting(-1) bootstrap.
+        $normalised = null;
+
+        if (is_string($raw)) {
+            $stripped = preg_replace('/^(\+|00)/', '', trim($raw));
+
+            if (preg_match('/^[1-9][0-9]{0,3}$/', (string) $stripped)) {
+                $normalised = $stripped;
+            }
+        }
+
+        if ($normalised === null) {
+            \Session::flash('flash_error_floating', __('That does not look like a country code. Enter the bare digits, e.g. 49.'));
+
+            return redirect()->route('kapsowhatsapp.settings');
+        }
+
+        \Option::set('kapsowhatsapp.default_country_code', $normalised);
+        \Session::flash('flash_success_floating', __('Default country code saved.'));
 
         return redirect()->route('kapsowhatsapp.settings');
     }

@@ -20,9 +20,10 @@ class PhoneNumber
 
     /**
      * The country code this installation uses for national-format numbers,
-     * from the `kapsowhatsapp.default_country_code` option (Manage this via
-     * `Option::set('kapsowhatsapp.default_country_code', '49')`, bare
-     * digits, no "+"). Falls back to DEFAULT_COUNTRY_CODE (empty) when
+     * from the `kapsowhatsapp.default_country_code` option -- set on the
+     * WhatsApp Accounts admin page (KapsoWhatsAppController::
+     * saveDefaultCountryCode() normalises the input and stores bare digits,
+     * no "+"). Falls back to DEFAULT_COUNTRY_CODE (empty) when
      * unset, matching the fail-safe default above.
      */
     public static function configuredDefaultCountryCode(): string

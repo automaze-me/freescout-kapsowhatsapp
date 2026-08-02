@@ -31,6 +31,23 @@
                 </div>
             </form>
 
+            <form method="POST" action="{{ route('kapsowhatsapp.country_code') }}" class="form-horizontal">
+                {{ csrf_field() }}
+                <div class="form-group">
+                    <label class="col-sm-2 control-label">{{ __('Default country code') }}</label>
+                    <div class="col-sm-6">
+                        <div class="input-group input-sized">
+                            <input type="text" class="form-control" name="default_country_code"
+                                   value="{{ $defaultCountryCode }}" placeholder="{{ __('e.g. 49') }}">
+                            <span class="input-group-btn">
+                                <button type="submit" class="btn btn-primary">{{ __('Save') }}</button>
+                            </span>
+                        </div>
+                        <p class="text-help">{{ __('Used to complete phone numbers typed in national format (with a leading 0). Numbers WhatsApp delivers are always international already. Leave empty to only accept full international numbers.') }}</p>
+                    </div>
+                </div>
+            </form>
+
             @if (!$hasApiKey)
                 <div class="alert alert-warning">{{ __('Add your Kapso API key above before adding a WhatsApp number.') }}</div>
             @endif

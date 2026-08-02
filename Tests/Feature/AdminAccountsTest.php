@@ -118,6 +118,73 @@ class AdminAccountsTest extends TestCase
      * The manual "Register with Kapso" step is gone: creating an account now
      * registers its webhook automatically as part of store().
      */
+    /**
+     * The default country code is a first-class setting on the accounts
+     * page (user feedback: an Option::set() tinker incantation is not a
+     * setting). Accepted input: bare digits ("49"), "+"-prefixed ("+49"),
+     * or international-dial-prefixed ("0049") -- all stored as bare digits,
+     * the shape PhoneNumber::configuredDefaultCountryCode() reads. Blank
+     * clears it (the module then declines to guess a country, the
+     * documented default).
+     */
+    public function test_admin_can_save_the_default_country_code()
+    {
+        foreach (['49' => '49', '+49' => '49', '0049' => '49', '1' => '1', '+358' => '358'] as $input => $stored) {
+            $this->actingAs($this->admin())
+                ->post(route('kapsowhatsapp.country_code'), ['default_country_code' => (string) $input])
+                ->assertStatus(302)
+                ->assertSessionHas('flash_success_floating');
+
+            \App\Option::$cache = [];
+            $this->assertSame($stored, \Modules\KapsoWhatsApp\Services\PhoneNumber::configuredDefaultCountryCode());
+        }
+
+        // Blank clears.
+        $this->actingAs($this->admin())
+            ->post(route('kapsowhatsapp.country_code'), ['default_country_code' => ''])
+            ->assertStatus(302)
+            ->assertSessionHas('flash_success_floating');
+
+        \App\Option::$cache = [];
+        $this->assertSame('', \Modules\KapsoWhatsApp\Services\PhoneNumber::configuredDefaultCountryCode());
+    }
+
+    public function test_an_invalid_country_code_is_rejected_and_leaves_the_stored_one_alone()
+    {
+        \App\Option::set('kapsowhatsapp.default_country_code', '49');
+
+        // Letters; a code starting with 0 after prefix-stripping; too long;
+        // and non-scalar JSON (the module's 422-vs-500 lesson: never let a
+        // cast throw under error_reporting(-1)).
+        foreach (['abc', '+0', '12345', ['49']] as $bad) {
+            $this->actingAs($this->admin())
+                ->post(route('kapsowhatsapp.country_code'), ['default_country_code' => $bad])
+                ->assertStatus(302)
+                ->assertSessionHas('flash_error_floating');
+
+            \App\Option::$cache = [];
+            $this->assertSame('49', \Modules\KapsoWhatsApp\Services\PhoneNumber::configuredDefaultCountryCode());
+        }
+    }
+
+    public function test_the_settings_page_shows_the_saved_country_code()
+    {
+        \App\Option::set('kapsowhatsapp.default_country_code', '49');
+
+        $response = $this->actingAs($this->admin())->get(route('kapsowhatsapp.settings'));
+
+        $response->assertStatus(200);
+        $this->assertStringContainsString('name="default_country_code"', $response->getContent());
+        $this->assertStringContainsString('value="49"', $response->getContent());
+    }
+
+    public function test_non_admin_cannot_save_the_country_code()
+    {
+        $this->actingAs($this->nonAdmin())
+            ->post(route('kapsowhatsapp.country_code'), ['default_country_code' => '49'])
+            ->assertStatus(403);
+    }
+
     public function test_admin_can_create_an_account()
     {
         $mailbox = $this->testMailbox();
