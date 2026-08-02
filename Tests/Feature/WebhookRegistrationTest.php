@@ -417,6 +417,69 @@ class WebhookRegistrationTest extends TestCase
         $this->assertSame(mb_substr($longUrl, 0, 255), $account->webhook_url);
     }
 
+    /**
+     * The EVENTS list grows across releases (delivery receipts added
+     * whatsapp.message.delivered/.read in 0.2.x): a webhook registered by
+     * an older module version keeps its old subscription forever unless
+     * refresh() self-heals it -- an upgrading install would otherwise
+     * silently never receive the new events. The heal is a PATCH of ONLY
+     * the events (no secret/URL churn, resume()'s own reasoning).
+     */
+    public function test_refresh_resubscribes_a_webhook_whose_event_list_is_outdated()
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                'id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true,
+                'events' => ['whatsapp.message.received', 'whatsapp.message.sent', 'whatsapp.message.failed'],
+            ]])),
+            new Response(200, [], json_encode(['data' => [
+                'id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true,
+                'events' => WebhookRegistrar::EVENTS,
+            ]])),
+        ]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+
+        $this->assertCount(2, $this->history, 'an outdated event list must trigger exactly one PATCH');
+        $patch = $this->history[1]['request'];
+        $this->assertSame('PATCH', $patch->getMethod());
+        $this->assertSame(WebhookRegistrar::EVENTS, $this->jsonBodyOf(1)['whatsapp_webhook']['events']);
+        $this->assertTrue((bool) $account->fresh()->webhook_active);
+    }
+
+    public function test_refresh_leaves_a_current_or_unreported_event_list_alone()
+    {
+        // Current list: no PATCH.
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => [
+                'id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true,
+                'events' => WebhookRegistrar::EVENTS,
+            ]])),
+        ]);
+
+        $account             = $this->makeAccount();
+        $account->webhook_id = 'wh-1';
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+        $this->assertCount(1, $this->history);
+
+        // No events key in the response at all: tells us nothing, touch
+        // nothing (every pre-existing refresh test relies on this too).
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => ['id' => 'wh-1', 'url' => WebhookRegistrar::webhookUrl(), 'active' => true]])),
+        ]);
+        $account->webhook_check_attempted_at = null;
+        $account->save();
+
+        (new WebhookRegistrar($account))->refresh();
+        $this->assertCount(1, $this->history);
+    }
+
     public function test_refresh_records_that_kapso_paused_the_webhook_and_why()
     {
         $this->fakeResponses([

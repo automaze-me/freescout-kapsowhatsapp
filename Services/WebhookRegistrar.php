@@ -176,6 +176,30 @@ class WebhookRegistrar
             return null;
         }
 
+        // Self-heal an outdated event subscription: EVENTS grows across
+        // releases (delivery receipts added .delivered/.read), and a webhook
+        // registered by an older module version keeps its old list forever
+        // otherwise -- an upgrading install would silently never receive the
+        // new events. A PATCH of ONLY the events (no secret/URL churn --
+        // resume()'s own reasoning), and only when something WE need is
+        // missing: a response without an events array tells us nothing and
+        // is left alone, and extra events beyond ours are never stripped.
+        $events = isset($webhook['events']) && is_array($webhook['events']) ? $webhook['events'] : null;
+
+        if ($events !== null && array_diff(self::EVENTS, $events)) {
+            try {
+                $webhook = $this->client->updatePhoneNumberWebhook($this->account->webhook_id, ['events' => self::EVENTS]);
+            } catch (KapsoApiException $e) {
+                if ($e->getHttpStatus() !== 404) {
+                    throw $e;
+                }
+
+                $this->markWebhookGone();
+
+                return null;
+            }
+        }
+
         $active = isset($webhook['active']) ? (bool) $webhook['active'] : null;
 
         $this->account->webhook_active             = $active;
