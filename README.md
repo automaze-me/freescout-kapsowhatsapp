@@ -4,9 +4,9 @@ WhatsApp as a communication channel for [FreeScout](https://freescout.net), via 
 [Kapso](https://kapso.ai) API.
 
 This module handles both directions: WhatsApp messages become FreeScout conversations and
-threads, with media, reactions and customer identity matching, and replying from FreeScout
-delivers the reply to WhatsApp. It registers and monitors its own Kapso webhook so no manual
-setup step is needed.
+threads — with media attachments, incoming reactions (shown on the message they refer to) and
+customer identity matching — and replying from FreeScout delivers the reply to WhatsApp. It
+registers and monitors its own Kapso webhook so no manual setup step is needed.
 
 ## Requirements
 
@@ -15,7 +15,10 @@ setup step is needed.
 
 ## Installation
 
-1. Extract into `Modules/KapsoWhatsApp/`.
+1. Download `KapsoWhatsApp.zip` from the
+   [latest release](https://github.com/automaze-me/freescout-kapsowhatsapp/releases/latest) and
+   extract it into your FreeScout `Modules/` directory — the zip already contains the
+   `KapsoWhatsApp/` folder.
 2. Activate the module in **Manage → Modules**.
 3. Go to **Manage → WhatsApp Accounts** and paste your Kapso API key. One key covers the whole
    install: your WhatsApp numbers come from the Kapso project it belongs to.
