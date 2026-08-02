@@ -70,8 +70,11 @@
  */
 .kwa-template-picker-standalone {
     clear: both;
-    margin-top: 4px;
-    margin-bottom: 4px;
+    /* 10px, not the pill row's own tighter rhythm: the panel is a distinct
+       surface and sitting 4px under the pills read as "no padding at all"
+       (user feedback, 2026-08-02). */
+    margin-top: 10px;
+    margin-bottom: 6px;
     padding: 8px 10px;
     border: 1px solid #e5e5e5;
     border-radius: 3px;
