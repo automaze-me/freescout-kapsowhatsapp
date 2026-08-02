@@ -176,6 +176,20 @@ class WebhookSecurityTest extends TestCase
         \Queue::assertPushed(\Modules\KapsoWhatsApp\Jobs\ReconcileOutboundMessage::class);
     }
 
+    public function test_delivered_and_read_events_dispatch_the_receipt_job()
+    {
+        $this->makeAccount();
+
+        \Queue::fake();
+
+        foreach (['whatsapp.message.delivered', 'whatsapp.message.read'] as $event) {
+            $payload = $this->payload();
+            $this->postWebhook($payload, $this->sign($payload), $event)->assertStatus(200);
+        }
+
+        \Queue::assertPushed(\Modules\KapsoWhatsApp\Jobs\ProcessDeliveryReceipt::class, 2);
+    }
+
     public function test_a_repeated_delivery_of_the_same_idempotency_key_is_skipped()
     {
         $this->makeAccount();

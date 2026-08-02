@@ -173,6 +173,20 @@
 }
 
 /**
+ * WhatsApp-style ticks on the reply's thread-meta remark
+ * (ProcessDeliveryReceipt + the thread.meta hook): a double tick is two
+ * overlapping glyphicons, and the read state turns them WhatsApp's own
+ * receipt blue.
+ */
+.kwa-ticks .kwa-tick-2 {
+    margin-left: -8px;
+}
+
+.kwa-ticks-read .glyphicon-ok {
+    color: #34b7f1;
+}
+
+/**
  * A channel picker makes no sense while composing a note -- a note never
  * leaves FreeScout on any channel (RouteReplyChannel::capture() already
  * refuses to record a choice for a TYPE_NOTE thread even if this were

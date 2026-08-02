@@ -108,7 +108,21 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // $mailbox) (resources/views/conversations/partials/thread.blade.php)
         // -- five args, of which only $thread is needed here.
         \Eventy::addAction('thread.meta', function ($thread) {
-            if ($thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_SENT_AT)) {
+            // One status line, highest state wins -- like WhatsApp's own
+            // ticks: read (blue double tick) > delivered (double tick) >
+            // sent (single tick). The receipt metas are best-effort
+            // presence signals stamped by ProcessDeliveryReceipt; the sent
+            // marker keeps its own delivered-and-healthy contract and is
+            // merely superseded VISUALLY by a higher tick.
+            $read      = $thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_READ_AT);
+            $delivered = $thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_DELIVERED_AT);
+            $ticks     = '<i class="glyphicon glyphicon-ok"></i><i class="glyphicon glyphicon-ok kwa-tick-2"></i> ';
+
+            if (is_string($read) && $read !== '') {
+                echo '<div class="thread-meta kwa-ticks kwa-ticks-read">'.$ticks.e(__('Seen by customer')).self::receiptTime($read).'</div>';
+            } elseif (is_string($delivered) && $delivered !== '') {
+                echo '<div class="thread-meta kwa-ticks">'.$ticks.e(__('Delivered via WhatsApp')).self::receiptTime($delivered).'</div>';
+            } elseif ($thread->getMeta(\Modules\KapsoWhatsApp\Entities\KapsoMessage::THREAD_META_SENT_AT)) {
                 echo '<div class="thread-meta"><i class="glyphicon glyphicon-ok"></i> '.e(__('Sent via WhatsApp')).'</div>';
             }
 
@@ -265,6 +279,21 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // $conversation is passed through so the closed branch can build its
         // "Send a template…" picker URLs (Stage 3c) via route(...).
         echo view('kapsowhatsapp::partials/window_banner', ['state' => $state, 'inline' => $inline, 'conversation' => $conversation, 'blockReply' => $blockReply])->render();
+    }
+
+    /**
+     * " · 5 minutes ago" for a receipt timestamp, '' when it does not
+     * parse -- the remark is better without a time than absent, and meta
+     * is stored data that a future format change must not turn into a
+     * render-time fatal.
+     */
+    protected static function receiptTime($iso)
+    {
+        try {
+            return ' · '.e(\App\User::dateDiffForHumans(\Carbon\Carbon::parse($iso)));
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     /**

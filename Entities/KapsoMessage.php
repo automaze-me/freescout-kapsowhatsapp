@@ -67,6 +67,20 @@ class KapsoMessage extends Model
     const THREAD_META_CHANNEL = 'kapsowhatsapp_channel';
 
     /**
+     * Thread::meta keys for WhatsApp delivery receipts on OUR OWN sends
+     * (ISO-8601 strings, stamped by ProcessDeliveryReceipt): delivered =
+     * the message reached the customer's device, read = they opened it.
+     * Best-effort presence signals only -- a customer can disable read
+     * receipts, so absence never means "unread" -- and deliberately NOT
+     * part of the THREAD_META_SENT_AT delivered-and-healthy invariant:
+     * that marker keeps its own contract, these only upgrade what the
+     * thread.meta remark under the reply shows (sent -> delivered -> read,
+     * one line, highest state wins, like WhatsApp's own ticks).
+     */
+    const THREAD_META_DELIVERED_AT = 'kapsowhatsapp_delivered_at';
+    const THREAD_META_READ_AT      = 'kapsowhatsapp_read_at';
+
+    /**
      * Thread::meta key holding the customer's current reaction emoji for
      * the message this thread carries (single slot: WhatsApp allows one
      * reaction per user per message; a new one replaces it, an empty one

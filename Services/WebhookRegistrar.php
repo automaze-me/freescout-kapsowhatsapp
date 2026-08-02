@@ -23,6 +23,12 @@ class WebhookRegistrar
         'whatsapp.message.received',
         'whatsapp.message.sent',
         'whatsapp.message.failed',
+        // Delivery receipts (ticks): stamped onto the reply thread by
+        // ProcessDeliveryReceipt. Webhooks registered before these two were
+        // added keep their old subscription list until re-registered
+        // (Register/Re-enable on the accounts page re-sends the full list).
+        'whatsapp.message.delivered',
+        'whatsapp.message.read',
     ];
 
     const PAYLOAD_VERSION = 'v2';

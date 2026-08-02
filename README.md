@@ -70,6 +70,11 @@ first attached image or document instead of going out as a separate message. Onc
 the send, the reply is marked *Sent via WhatsApp* on the reply. Replying also marks the customer's
 own most recent message as read (the blue ticks).
 
+The remark under the reply then upgrades like WhatsApp's own ticks: *Delivered via WhatsApp*
+(double tick) once the message reaches the customer's device, and *Seen by customer* (blue double
+tick, with the time) once they read it. Read receipts only arrive when the customer has them
+enabled in WhatsApp, so a reply without the blue ticks is not necessarily unread.
+
 If the send itself is rejected at request time (Kapso's API declines it, rather than accepting it
 and reporting a failure later via webhook), the same red delivery-failure line item described below
 appears immediately — this is not only a webhook-driven outcome.

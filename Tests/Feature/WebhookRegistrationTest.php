@@ -86,6 +86,8 @@ class WebhookRegistrationTest extends TestCase
             'whatsapp.message.received',
             'whatsapp.message.sent',
             'whatsapp.message.failed',
+            'whatsapp.message.delivered',
+            'whatsapp.message.read',
         ], $sent['events']);
         $this->assertSame($account->webhook_secret, $sent['secret_key'], 'Kapso must be given the same secret we stored');
     }

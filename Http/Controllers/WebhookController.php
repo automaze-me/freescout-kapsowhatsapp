@@ -65,6 +65,11 @@ class WebhookController extends Controller
                         ReconcileOutboundMessage::dispatch($account->id, $event, $payload);
                         break;
 
+                    case 'whatsapp.message.delivered':
+                    case 'whatsapp.message.read':
+                        \Modules\KapsoWhatsApp\Jobs\ProcessDeliveryReceipt::dispatch($account->id, $event, $payload);
+                        break;
+
                     default:
                         \Log::info('[KapsoWhatsApp] Ignoring unsubscribed event: '.$event);
                         break;
