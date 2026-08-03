@@ -11,7 +11,48 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__.'/../Resources/views', 'kapsowhatsapp');
         $this->loadTranslationsFrom(__DIR__.'/../Resources/lang', 'kapsowhatsapp');
         $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
+
+        // FreeScout's module install/update flow never restarts queue
+        // workers, so after an update a long-running worker keeps executing
+        // the module code it booted with (live incident: a stale worker kept
+        // stamping new conversations with the old channel code while the web
+        // UI checked the new one). Must never break boot — this also runs
+        // for artisan commands on half-installed systems where the options
+        // table or cache may not be usable yet.
+        try {
+            self::restartQueueIfVersionChanged();
+        } catch (\Throwable $e) {
+            // Do nothing.
+        }
+
         $this->hooks();
+    }
+
+    /**
+     * Broadcast queue:restart once whenever the installed module version
+     * changes. The version is read from module.json ON DISK — not from a
+     * class constant or the cached module scan — so even a worker running
+     * stale in-memory code detects the change and retires itself.
+     */
+    public static function restartQueueIfVersionChanged()
+    {
+        $manifest = json_decode(file_get_contents(__DIR__.'/../module.json'), true);
+        $version = $manifest['version'] ?? null;
+
+        // Read without Option::$cache: core's Option::set() never updates
+        // that process-global static, and get() caches misses as a sentinel
+        // — in a long-lived process (a queue worker, or several tests in one
+        // PHPUnit run) a cached read here could compare against a stale
+        // value forever. One tiny extra query per boot is the honest price.
+        if (!$version || \Option::get('kapsowhatsapp.version', false, true, false) === $version) {
+            return false;
+        }
+
+        \Artisan::call('queue:restart');
+        \Option::set('kapsowhatsapp.version', $version);
+        unset(\Option::$cache['kapsowhatsapp.version']);
+
+        return true;
     }
 
     public function register()
