@@ -7,6 +7,7 @@ use App\Customer;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
 use App\Folder;
+use App\Subscription;
 use App\Thread;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
@@ -172,6 +173,31 @@ class InboundMessageTest extends TestCase
 
         \Event::assertDispatched(CustomerReplied::class);
         \Event::assertNotDispatched(CustomerCreatedConversation::class);
+    }
+
+    public function test_a_subscribed_user_gets_a_notification_job_for_an_inbound_message()
+    {
+        $account = $this->makeAccount();
+
+        $user = $this->adminUser();
+        Subscription::create([
+            'user_id' => $user->id,
+            'medium'  => Subscription::MEDIUM_EMAIL,
+            'event'   => Subscription::EVENT_NEW_CONVERSATION,
+        ]);
+
+        // Firing the events only *registers* them in Subscription's static
+        // array; core drains that array at HTTP request terminate or in
+        // FetchEmails — never inside a queue worker, which is where this job
+        // runs in production. The job must drain it itself, observable as
+        // core's notification job being queued. Queue::fake() (not
+        // Bus::fake(), see TestCase notes) because the sync driver would
+        // otherwise run the notification job inline and try to send mail.
+        \Queue::fake();
+
+        (new ProcessInboundMessage($account->id, $this->payload()))->handle();
+
+        \Queue::assertPushed(\App\Jobs\SendNotificationToUsers::class);
     }
 
     public function test_duplicate_wamid_is_ignored_inside_the_job()

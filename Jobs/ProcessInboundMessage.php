@@ -7,6 +7,7 @@ use App\Conversation;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
 use App\Mailbox;
+use App\Subscription;
 use App\Thread;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -310,6 +311,28 @@ class ProcessInboundMessage implements ShouldQueue
             }
         } catch (\Throwable $e) {
             \Log::error('[KapsoWhatsApp] A listener threw while dispatching events for message id '.$kapsoMessage->id, [
+                'exception' => $e,
+            ]);
+        }
+
+        // The events above only *register* user notifications: core's
+        // SendNotificationToUsers listener appends to the static
+        // Subscription::$occurred_events array, and the array is drained —
+        // actually dispatching the notification email job, website (bell)
+        // and browser-push notifications — in exactly two places: the
+        // TerminateHandler middleware when an HTTP request ends, and
+        // FetchEmails, which drains explicitly because it runs outside HTTP
+        // (FetchEmails.php:189). This job runs in the queue worker, a third
+        // context where neither happens, so without this call the registered
+        // events sit in the worker's memory forever and no user is ever
+        // notified of an inbound WhatsApp message. Caught rather than
+        // rethrown for the same reason as the listener catch above: the
+        // claim is already committed, so failing the job here would only
+        // drive a no-op retry, never a re-fire.
+        try {
+            Subscription::processEvents();
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] Subscription::processEvents() threw for message id '.$kapsoMessage->id, [
                 'exception' => $e,
             ]);
         }
