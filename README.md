@@ -8,6 +8,24 @@ threads — with media attachments, incoming reactions (shown as a remark under 
 customer identity matching — and replying from FreeScout delivers the reply to WhatsApp. It
 registers and monitors its own Kapso webhook so no manual setup step is needed.
 
+## Screenshots
+
+A WhatsApp conversation in FreeScout — the green **WhatsApp** tag on every message that travelled
+via WhatsApp, delivery ticks under replies (*Delivered via WhatsApp*, blue *Seen by customer*),
+a customer reaction shown as a remark, and the 24-hour window status above the thread:
+
+![A WhatsApp conversation in FreeScout](docs/screenshots/conversation.png)
+
+When the 24-hour window has closed, the red notice offers **Send a template…**, which lists the
+project's approved templates with a formatted preview and one input per placeholder:
+
+![The template picker on a closed 24-hour window](docs/screenshots/template-picker.png)
+
+Setup lives in **Manage → WhatsApp Accounts** — one API key for the install, the default country
+code, and each connected number with its live webhook status:
+
+![The WhatsApp Accounts settings page](docs/screenshots/settings.png)
+
 ## Requirements
 
 - FreeScout 1.8.128+

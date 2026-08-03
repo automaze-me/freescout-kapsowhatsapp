@@ -1,6 +1,7 @@
 # Files excluded from the distributed module archive (git archive / release zip).
 # What remains is exactly what a FreeScout install needs under Modules/KapsoWhatsApp/.
 /.github                export-ignore
+/docs                   export-ignore
 /.gitattributes         export-ignore
 /.gitignore             export-ignore
 /Tests                  export-ignore
