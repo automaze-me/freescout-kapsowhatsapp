@@ -48,6 +48,55 @@ class UpdateChannelCodeTo105 extends Migration
             })
             ->update(['channel' => $to]);
 
+        // A row may already exist at the target code for the same phone:
+        // module code writes $to-rows the moment the new version goes live,
+        // and a webhook can land before this migration runs (some installs
+        // only migrate at the next container boot). The bulk UPDATE below
+        // would then trip the unique (channel, channel_id) index and abort
+        // the whole migrate run, so the superseded source rows are dropped
+        // first — the target row is the one the running code already
+        // resolves customers through. If the interim message created a
+        // duplicate customer, the log line below carries both customer ids
+        // so an agent can merge them later (same trade-off CustomerResolver
+        // makes for ambiguous matches). Collisions are collected in PHP
+        // because MySQL cannot subquery the table being deleted from.
+        $collisions = DB::table('customer_channel')
+            ->where('channel', $to)
+            ->whereIn('channel_id', function ($q) {
+                $q->select('contact_phone')
+                    ->from('kapso_whatsapp_messages')
+                    ->whereNotNull('contact_phone');
+            })
+            ->get(['channel_id', 'customer_id']);
+
+        foreach ($collisions->chunk(500) as $chunk) {
+            $stale = DB::table('customer_channel')
+                ->where('channel', $from)
+                ->whereIn('channel_id', $chunk->pluck('channel_id')->all())
+                ->get(['id', 'channel_id', 'customer_id']);
+
+            if ($stale->isEmpty()) {
+                continue;
+            }
+
+            $stalePhones = $stale->pluck('channel_id')->all();
+
+            \Log::info('[KapsoWhatsApp] Channel remap: dropping stale rows superseded by rows live code already created', [
+                'from'     => $from,
+                'to'       => $to,
+                'dropped'  => $stale->map(function ($row) {
+                    return ['channel_id' => $row->channel_id, 'customer_id' => $row->customer_id];
+                })->all(),
+                'kept'     => $chunk->whereIn('channel_id', $stalePhones)->map(function ($row) {
+                    return ['channel_id' => $row->channel_id, 'customer_id' => $row->customer_id];
+                })->values()->all(),
+            ]);
+
+            DB::table('customer_channel')
+                ->whereIn('id', $stale->pluck('id')->all())
+                ->delete();
+        }
+
         // customer_channel rows are only ever written by CustomerResolver
         // with the same E164 string ProcessInboundMessage stores as
         // contact_phone, so the phone match identifies exactly our rows.
