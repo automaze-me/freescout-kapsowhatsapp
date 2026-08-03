@@ -7,6 +7,7 @@
     "author": "automaze.me",
     "authorUrl": "https://automaze.me",
     "license": "MIT",
+    "img": "/modules/kapsowhatsapp/img/icon.png",
     "requiredAppVersion": "1.8.128",
     "latestVersionUrl": "https://raw.githubusercontent.com/automaze-me/freescout-kapsowhatsapp/refs/heads/main/module.json",
     "latestVersionZipUrl": "https://github.com/automaze-me/freescout-kapsowhatsapp/releases/latest/download/KapsoWhatsApp.zip",
