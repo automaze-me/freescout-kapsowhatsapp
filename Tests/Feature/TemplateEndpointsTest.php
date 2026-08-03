@@ -427,7 +427,7 @@ class TemplateEndpointsTest extends TestCase
 
     /**
      * Task 1 of Stage 4: resolveConversation()'s 404 generalises from
-     * "channel 102" to "no WhatsApp history" -- a mixed (channel-1)
+     * "channel 105" to "no WhatsApp history" -- a mixed (channel-1)
      * conversation with an inbound row is template-shaped too.
      */
     public function test_the_list_endpoint_200s_on_a_channel_1_conversation_with_rows()

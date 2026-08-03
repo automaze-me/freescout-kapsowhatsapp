@@ -411,7 +411,7 @@ class WindowBannerTest extends TestCase
      * Task 1 of Stage 4: WindowState::compute() drops its own channel gate
      * (the inbound-row anchor is the gate now), so a channel-1 conversation
      * with WhatsApp history gets a real window state. The banner must NOT
-     * follow suit -- it stays channel-102-only per spec (the Task 3 picker
+     * follow suit -- it stays channel-105-only per spec (the Task 3 picker
      * is the window surface for mixed conversations); the provider gains
      * its own explicit channel gate ahead of WindowState so this stays true
      * once WindowState itself no longer enforces it. Guards Task 3's banner
@@ -425,7 +425,7 @@ class WindowBannerTest extends TestCase
         $this->seedMessage($account, $conversation, '+491771234567', KapsoMessage::DIRECTION_INBOUND, now()->subHours(30));
 
         $state = WindowState::forConversation($conversation);
-        $this->assertNotNull($state, 'WindowState must generalise to a rows-having non-102 conversation');
+        $this->assertNotNull($state, 'WindowState must generalise to a rows-having non-105 conversation');
         $this->assertFalse($state['open']);
 
         $html = $this->renderBanner($conversation, $account->mailbox);
@@ -438,7 +438,7 @@ class WindowBannerTest extends TestCase
      * F1 (whole-stage review, CRITICAL): the reply-blocking JS must key on
      * whether the customer can still be reached at all, not merely on the
      * window being closed -- the old single-marker design defeated the
-     * email escape hatch: a closed 102 conversation with an email on file
+     * email escape hatch: a closed 105 conversation with an email on file
      * kept `.conv-reply` blocked and the Stage 4 picker (which renders
      * INSIDE `.conv-reply-block`) unreachable, even though the C1 filter
      * above correctly leaves the Reply button itself in the DOM for that

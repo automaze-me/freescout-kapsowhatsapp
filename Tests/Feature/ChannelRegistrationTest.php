@@ -6,17 +6,17 @@ use Modules\KapsoWhatsApp\Tests\TestCase;
 
 class ChannelRegistrationTest extends TestCase
 {
-    public function test_channel_102_is_registered()
+    public function test_channel_105_is_registered()
     {
         $channels = \Eventy::filter('channels.list', []);
 
-        $this->assertArrayHasKey(102, $channels);
-        $this->assertSame('WhatsApp', $channels[102]);
+        $this->assertArrayHasKey(105, $channels);
+        $this->assertSame('WhatsApp', $channels[105]);
     }
 
-    public function test_channel_name_resolves_for_102()
+    public function test_channel_name_resolves_for_105()
     {
-        $this->assertSame('WhatsApp', \Eventy::filter('channel.name', '', 102));
+        $this->assertSame('WhatsApp', \Eventy::filter('channel.name', '', 105));
     }
 
     public function test_channel_name_is_untouched_for_other_codes()

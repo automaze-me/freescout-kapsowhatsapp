@@ -33,8 +33,8 @@ class ChannelChoice
      * At least one inbound `kapso_whatsapp_messages` row exists for this
      * conversation -- the same fact every send job's guards() and
      * TemplatesController::resolveConversation() already derive
-     * account/phone from. True for every channel-102 conversation by
-     * construction (Stage 1: a channel-102 conversation is only ever
+     * account/phone from. True for every channel-105 conversation by
+     * construction (Stage 1: a channel-105 conversation is only ever
      * created off an inbound webhook) and, since Stage 4 generalises the
      * rest of the module off this same predicate, also true for any
      * channel-1 (or other) conversation a WhatsApp message has ever landed

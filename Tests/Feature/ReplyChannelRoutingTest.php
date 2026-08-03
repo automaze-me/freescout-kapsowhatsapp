@@ -217,7 +217,7 @@ class ReplyChannelRoutingTest extends TestCase
     /**
      * effective == native (or no meta at all) must return false and
      * dispatch NOTHING -- core proceeds completely untouched, whether that
-     * means its full email path or (for a channel-102 conversation) falling
+     * means its full email path or (for a channel-105 conversation) falling
      * through to the existing SendReplyToWhatsApp listener.
      */
     public function test_native_choices_and_absent_meta_leave_core_untouched()
@@ -237,7 +237,7 @@ class ReplyChannelRoutingTest extends TestCase
         $threadEmailNative->setMeta(KapsoMessage::THREAD_META_CHANNEL, ChannelChoice::CHANNEL_EMAIL);
         $threadEmailNative->save();
 
-        // Meta 'whatsapp' on a channel-102 (native-WhatsApp) conversation.
+        // Meta 'whatsapp' on a channel-105 (native-WhatsApp) conversation.
         $conversationWaNative = $this->makeConversation($account, KapsoAccount::CHANNEL, $customer);
         $this->seedInbound($account, $conversationWaNative, 'wamid.WANATIVE');
         $threadWaNative = $this->makeMessageThread($conversationWaNative);
@@ -294,7 +294,7 @@ class ReplyChannelRoutingTest extends TestCase
     }
 
     /**
-     * The mirror cross-channel cell: email chosen on a channel-102
+     * The mirror cross-channel cell: email chosen on a channel-105
      * conversation. The dispatch must replicate core's own
      * (SendReplyToCustomer.php:110-112) verbatim: conversation, the whole
      * $replies collection, the conversation's own customer, onto the

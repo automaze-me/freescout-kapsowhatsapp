@@ -182,8 +182,10 @@ choice applies to that one reply only.
 
 ## Channel code
 
-This module registers communication channel **102**. Codes 100 and 101 are used by the
-`MetaWhatsApp` community module, so the two can coexist.
+This module registers communication channel **105**. Codes below 100 belong to official
+modules; 103 and 104 are assigned to the `MetaWhatsApp` community module, so the two can
+coexist. Earlier releases used code 102 — a bundled migration remaps existing conversations
+and customer channels on upgrade.
 
 ## Testing
 

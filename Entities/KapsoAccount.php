@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class KapsoAccount extends Model
 {
-    const CHANNEL      = 102;
+    const CHANNEL      = 105;
     const CHANNEL_NAME = 'WhatsApp';
 
     protected $table = 'kapso_whatsapp_accounts';

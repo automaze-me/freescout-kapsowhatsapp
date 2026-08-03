@@ -121,7 +121,7 @@ class SendTemplateMessage implements ShouldQueue
      * SendReplyMessage::guards() -- see that method's docblock for the
      * rationale behind each check and why races get an info log while
      * persistent conditions get an error log, and for the Stage 4
-     * generalisation of the conversation check (channel 102 OR
+     * generalisation of the conversation check (channel 105 OR
      * ChannelChoice::whatsappAvailable()) applied identically here. A
      * template thread always has a prior inbound message (Stage 3c is
      * closed-window replies only, never agent-initiated conversations --

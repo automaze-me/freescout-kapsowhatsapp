@@ -39,7 +39,7 @@ class TemplatesController extends Controller
      *
      * 404, not 403, for a conversation that either does not exist or has no
      * WhatsApp history (Stage 4: ChannelChoice::whatsappAvailable() --
-     * channel-102 conversations always pass this by construction, since
+     * channel-105 conversations always pass this by construction, since
      * every one has at least one inbound row, so this generalises the old
      * "not on the WhatsApp channel" gate to "nothing template-shaped here"
      * without narrowing what a native WhatsApp conversation could already
@@ -80,7 +80,7 @@ class TemplatesController extends Controller
      * Returns [null, null] when the conversation has no inbound WhatsApp
      * message yet, or when the account it points at is missing/inactive --
      * Stage 3c is closed-window replies only (see the spec's "Out of
-     * scope"), so in practice a channel-102 conversation reaching here
+     * scope"), so in practice a channel-105 conversation reaching here
      * always has one, but a hand-crafted or edge-case request must still
      * degrade to an honest error rather than a fatal.
      *

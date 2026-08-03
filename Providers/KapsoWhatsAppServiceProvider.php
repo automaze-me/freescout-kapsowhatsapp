@@ -152,12 +152,12 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // placement. Each hook checks $conversation->isInChatMode() itself
         // and renders only on its own side, so exactly one echoes per
         // request -- never both. renderWindowBanner() itself now renders
-        // nothing for a non-channel-102 conversation (Stage 4: WindowState
+        // nothing for a non-channel-105 conversation (Stage 4: WindowState
         // generalised its own gate to "has WhatsApp history", so this
-        // provider carries the channel-102-only restriction explicitly --
+        // provider carries the channel-105-only restriction explicitly --
         // banners stay native-WhatsApp-only per spec; the Task 3 picker is
         // the window surface for a mixed conversation) or for a
-        // channel-102 conversation that has never had an inbound message --
+        // channel-105 conversation that has never had an inbound message --
         // other modules (e.g. Checklists, CustomFields, Tags) already use
         // these same two hooks, so this must stay silent rather than assume
         // it owns the whole block.
@@ -252,8 +252,8 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
     {
         // Stage 4: WindowState no longer gates on channel itself (it
         // answers for any conversation with WhatsApp history), so this
-        // explicit check is what keeps the banner channel-102-only, per
-        // spec -- a mixed (non-102) conversation's window state surfaces
+        // explicit check is what keeps the banner channel-105-only, per
+        // spec -- a mixed (non-105) conversation's window state surfaces
         // through the Task 3 picker instead, never through this banner.
         if ((int) $conversation->channel !== \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL) {
             return;
@@ -268,7 +268,7 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
         // F1 (whole-stage review, CRITICAL): the closed banner used to be
         // the ONLY source of the marker Public/js/kapsowhatsapp.js keyed its
         // reply-blocking on (data-kwa-window-closed), which meant EVERY
-        // closed 102 conversation got its Reply button blocked client-side
+        // closed 105 conversation got its Reply button blocked client-side
         // -- including one where C1 above correctly leaves the button in
         // the DOM because the customer has an email on file. The picker
         // (Task 3) renders INSIDE .conv-reply-block, so that stale JS
@@ -336,8 +336,8 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
                 : __('window closed :relative', ['relative' => \App\User::dateDiffForHumans($state['closes_at']->copy())]);
         }
 
-        // The 3c template control lives on the picker only for a NON-102
-        // conversation -- a channel-102 conversation already carries it on
+        // The 3c template control lives on the picker only for a NON-105
+        // conversation -- a channel-105 conversation already carries it on
         // the closed banner above (renderWindowBanner()); never both, per
         // spec.
         $templateTransport = !$windowOpen && (int) $conversation->channel !== \Modules\KapsoWhatsApp\Entities\KapsoAccount::CHANNEL;
@@ -353,10 +353,10 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
     }
 
     /**
-     * F5 (whole-stage review, MINOR): a closed, non-102 conversation with
+     * F5 (whole-stage review, MINOR): a closed, non-105 conversation with
      * WhatsApp history but no customer email is otherwise a dead end --
      * pickerAvailable() (above) refuses it because there is no email leg,
-     * renderWindowBanner() refuses it because it is not channel-102, and
+     * renderWindowBanner() refuses it because it is not channel-105, and
      * the revised C1 conversation.reply_button.enabled filter correctly
      * removes the Reply button because nothing free-form can send -- yet
      * TemplatesController's endpoints would still happily serve this
@@ -364,7 +364,7 @@ class KapsoWhatsAppServiceProvider extends ServiceProvider
      * conversation satisfies). Render the picker partial in template-only
      * mode instead: the 3c transport attributes, the window-closed hint,
      * and the "Send a template…" button, but no radios -- there is nothing
-     * left to pick between. Channel-102 conversations never reach here for
+     * left to pick between. Channel-105 conversations never reach here for
      * that reason: their closed banner (renderWindowBanner()) already
      * carries the button, and pickerAvailable() only ever fails them on the
      * missing-email leg -- same shape, but the banner already covers it.

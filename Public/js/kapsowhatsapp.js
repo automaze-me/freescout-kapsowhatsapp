@@ -8,7 +8,7 @@
  * F1 revision (whole-stage review, CRITICAL): blocking is keyed on
  * `[data-kwa-block-reply]`, NOT `[data-kwa-window-closed]`. The two used to
  * be the same marker, which meant every closed WhatsApp window blocked
- * Reply outright -- including a closed 102 conversation whose customer has
+ * Reply outright -- including a closed 105 conversation whose customer has
  * an email on file, where the agent can and should still be able to click
  * Reply and send email through the Stage 4 picker (which renders INSIDE
  * `.conv-reply-block` -- see below -- so a stale blocker there made the

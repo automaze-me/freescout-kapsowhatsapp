@@ -174,7 +174,7 @@ class ChannelChoiceTest extends TestCase
         $account         = $this->makeAccount();
         $customerNoEmail = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
 
-        // Channel-102 conversation, closed window, customer without an
+        // Channel-105 conversation, closed window, customer without an
         // email -> falls all the way back to the native channel, WhatsApp.
         $waConversation = $this->makeConversation($account, KapsoAccount::CHANNEL, $customerNoEmail);
         $waThread        = $this->makeCustomerThread($waConversation);

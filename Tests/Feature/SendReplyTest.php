@@ -1067,12 +1067,12 @@ class SendReplyTest extends TestCase
     }
 
     /**
-     * Task 1 of Stage 4: guards() generalises "channel 102" to "channel 102
+     * Task 1 of Stage 4: guards() generalises "channel 105" to "channel 105
      * OR this conversation has WhatsApp history" -- a mixed (channel-1)
      * conversation that has an inbound WhatsApp row must send exactly the
-     * way a native channel-102 conversation does, full payload included.
+     * way a native channel-105 conversation does, full payload included.
      */
-    public function test_a_channel_1_conversation_with_an_inbound_row_sends_like_channel_102()
+    public function test_a_channel_1_conversation_with_an_inbound_row_sends_like_channel_105()
     {
         [$account, $conversation, $inbound, $thread] = $this->scenario();
 

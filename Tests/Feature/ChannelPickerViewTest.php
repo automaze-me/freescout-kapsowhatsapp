@@ -146,7 +146,7 @@ class ChannelPickerViewTest extends TestCase
         $rowlessHtml = $this->renderPicker($rowless);
         $this->assertStringNotContainsString('kwa-channel-picker', $rowlessHtml);
 
-        // Channel-102 conversation (has rows by construction) but the
+        // Channel-105 conversation (has rows by construction) but the
         // customer has no email on file: no email leg to choose either.
         $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);
         $waOnly          = $this->makeConversation($account, KapsoAccount::CHANNEL, $noEmailCustomer);
@@ -193,7 +193,7 @@ class ChannelPickerViewTest extends TestCase
 
         // Channel-1 + rows + email, window closed -> the picker itself is
         // the only closed-window surface on a mixed conversation (there is
-        // no banner -- that stays channel-102-only per spec), so it must
+        // no banner -- that stays channel-105-only per spec), so it must
         // carry the 3c template transport.
         $mixed = $this->makeConversation($account, 1, $customer);
         $this->seedInbound($account, $mixed, '+491775555555', null, now()->subHours(30), 'wamid.PICK5');
@@ -203,7 +203,7 @@ class ChannelPickerViewTest extends TestCase
         $this->assertStringContainsString('data-kwa-send-url', $mixedHtml);
         $this->assertStringContainsString('kwa-send-template-btn', $mixedHtml);
 
-        // Channel-102, window closed, customer WITH an email so the picker
+        // Channel-105, window closed, customer WITH an email so the picker
         // still renders (pickerAvailable() needs both legs) -- the closed
         // banner already carries the template transport for a native
         // WhatsApp conversation, so the picker must NOT carry it too: never
@@ -219,10 +219,10 @@ class ChannelPickerViewTest extends TestCase
     }
 
     /**
-     * F5 (whole-stage review, MINOR): a closed, non-102 conversation with
+     * F5 (whole-stage review, MINOR): a closed, non-105 conversation with
      * WhatsApp history but no customer email is otherwise a dead end --
      * pickerAvailable() needs both legs so the normal picker never renders,
-     * the window banner stays channel-102-only per spec, and the revised C1
+     * the window banner stays channel-105-only per spec, and the revised C1
      * filter correctly removes the Reply button because nothing free-form
      * can send -- yet the template endpoints would still happily serve this
      * conversation. renderChannelPicker() must fall back to a
@@ -231,7 +231,7 @@ class ChannelPickerViewTest extends TestCase
      * pick between). An open window on the same shape has no template leg
      * either, so it renders nothing at all.
      */
-    public function test_a_closed_non102_conversation_with_no_email_gets_a_template_only_picker()
+    public function test_a_closed_non105_conversation_with_no_email_gets_a_template_only_picker()
     {
         $account         = $this->makeAccount();
         $noEmailCustomer = Customer::createWithoutEmail(['first_name' => 'No', 'last_name' => 'Email']);

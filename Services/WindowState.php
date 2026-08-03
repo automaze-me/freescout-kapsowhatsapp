@@ -66,7 +66,7 @@ class WindowState
     /**
      * Returns null when the conversation has no inbound WhatsApp message at
      * all (nothing has ever opened a window for it) -- true of a
-     * never-messaged conversation on ANY channel, not only channel 102:
+     * never-messaged conversation on ANY channel, not only channel 105:
      * Stage 4 generalises this class off the channel column entirely, since
      * a channel-1 (or other) conversation can carry WhatsApp history too
      * (Decision D6: inbound appends to the customer's open conversation

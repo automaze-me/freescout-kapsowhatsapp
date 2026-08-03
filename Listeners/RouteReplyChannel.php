@@ -118,7 +118,7 @@ class RouteReplyChannel
      *   - no triggering thread, or it carries no valid captured choice ->
      *     return $skip (false): native, core proceeds untouched.
      *   - the choice equals the conversation's own native channel
-     *     ('whatsapp' on a channel-102 conversation, 'email' on any other)
+     *     ('whatsapp' on a channel-105 conversation, 'email' on any other)
      *     -> return $skip: also native, nothing to intercept.
      *   - otherwise, a genuine cross-channel choice -> dispatch the OTHER
      *     channel's send job ourselves and return true, so core's own

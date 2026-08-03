@@ -38,9 +38,9 @@
       $windowHint         string, already __()'d ('' only in the
                            unreachable no-window-state case -- see the
                            provider).
-      $templateTransport  bool -- true for a CLOSED window on a NON-102
+      $templateTransport  bool -- true for a CLOSED window on a NON-105
                            conversation, whether or not both channels are
-                           pickable. A channel-102 conversation already
+                           pickable. A channel-105 conversation already
                            carries the Stage 3c template control on its
                            closed banner (window_banner.blade.php) -- never
                            both, per spec.
@@ -48,7 +48,7 @@
                            ChannelChoice::pickerAvailable() said no (the
                            conversation has no email leg) but there is
                            still WhatsApp history, a closed window, and a
-                           non-102 channel, so the template send is the
+                           non-105 channel, so the template send is the
                            ONLY thing left an agent can do here. Suppresses
                            the "Send via" label and both radios; nothing
                            to pick between when only one of the two
