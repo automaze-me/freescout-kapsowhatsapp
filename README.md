@@ -1,4 +1,4 @@
-# KapsoWhatsApp
+# WhatsApp (Kapso)
 
 WhatsApp as a communication channel for [FreeScout](https://freescout.net), via the
 [Kapso](https://kapso.ai) API.

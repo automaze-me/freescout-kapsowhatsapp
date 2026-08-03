@@ -1,5 +1,5 @@
 {
-    "name": "KapsoWhatsApp",
+    "name": "WhatsApp (Kapso)",
     "alias": "kapsowhatsapp",
     "description": "WhatsApp as a communication channel for FreeScout, via the Kapso API.",
     "version": "0.2.3",
