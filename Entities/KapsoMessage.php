@@ -108,7 +108,8 @@ class KapsoMessage extends Model
 
     protected $fillable = [
         'account_id', 'conversation_id', 'thread_id', 'attachment_id', 'wamid',
-        'kapso_conversation_id', 'direction', 'status', 'is_reaction', 'contact_phone', 'error',
+        'kapso_conversation_id', 'direction', 'status', 'is_reaction', 'contact_phone',
+        'contact_bsuid', 'error',
     ];
 
     /**
