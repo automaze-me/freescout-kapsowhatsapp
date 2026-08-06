@@ -99,9 +99,14 @@ class ContactDirectory
 
         $defaultCountryCode = PhoneNumber::configuredDefaultCountryCode();
 
+        // message.from is deliberately NOT consulted here: captureFromWebhook()
+        // only ever runs for OUTBOUND events (sent/failed/receipts), where
+        // `from` names the BUSINESS's own number, never the customer -- using
+        // it could map this bsuid to the business's own customer record (if
+        // one exists, e.g. a self-test contact) and record() would never
+        // repoint it back.
         $e164 = PhoneNumber::toE164($payload['conversation']['phone_number'] ?? null, $defaultCountryCode)
-            ?: PhoneNumber::toE164($payload['message']['to'] ?? null, $defaultCountryCode)
-            ?: PhoneNumber::toE164($payload['message']['from'] ?? null, $defaultCountryCode);
+            ?: PhoneNumber::toE164($payload['message']['to'] ?? null, $defaultCountryCode);
 
         if (!$e164) {
             return;
@@ -199,6 +204,14 @@ class ContactDirectory
         }
 
         $username = is_string($username) ? trim($username) : '';
+
+        // kapso_whatsapp_contacts.username is string(191); an unbounded
+        // value would make record()'s insert/update throw on strict
+        // MariaDB/Postgres -- and since record() runs inside
+        // CustomerResolver::resolve() before ProcessInboundMessage writes
+        // the message row, that throw fails the job on every retry and
+        // permanently loses the inbound message.
+        $username = mb_substr($username, 0, 191);
 
         return [
             'bsuid'        => $bsuid,

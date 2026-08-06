@@ -83,6 +83,22 @@ class ContactDirectoryTest extends TestCase
         $this->assertNull($identity['username']);
     }
 
+    public function test_extract_inbound_clamps_an_overlong_username()
+    {
+        // kapso_whatsapp_contacts.username is string(191); an unclamped
+        // value would throw on insert and permanently lose the message
+        // (see identity()'s comment) rather than just truncating it.
+        $identity = (new ContactDirectory())->extractInbound([
+            'message' => [
+                'from_user_id' => 'US.OverlongUsername1',
+                'username'     => str_repeat('a', 500),
+            ],
+        ]);
+
+        $this->assertSame(191, strlen($identity['username']));
+        $this->assertSame(str_repeat('a', 191), $identity['username']);
+    }
+
     public function test_extract_outbound_reads_to_user_id()
     {
         $identity = (new ContactDirectory())->extractOutbound([

@@ -60,7 +60,15 @@ class CustomerResolver
             $customer->addChannel(KapsoAccount::CHANNEL, $e164);
         } elseif ($created && $bsuid) {
             // A customer who never had a phone: the bsuid is the only
-            // channel identity available (D11).
+            // channel identity available (D11). Best-effort only: core's
+            // customer_channel.channel_id is string(64), shorter than a
+            // bsuid can be (up to 135 chars, see BSUID_PATTERN), and
+            // CustomerChannel::create() swallows its own exceptions -- so an
+            // over-long bsuid silently creates no channel row here. Harmless
+            // because ContactDirectory (kapso_whatsapp_contacts.bsuid,
+            // string(191)) is the sole authority for bsuid -> customer
+            // resolution; no future code may assume this customer_channel
+            // row exists.
             $customer->addChannel(KapsoAccount::CHANNEL, $bsuid);
         }
 
