@@ -84,6 +84,38 @@ class WindowBannerTest extends TestCase
     }
 
     /**
+     * Generic sibling to seedMessage() above, for Stage 5 BSUID tests: takes
+     * an attrs array (wamid, contact_phone, contact_bsuid, created_at, ...)
+     * instead of seedMessage()'s fixed (contactPhone, direction) params,
+     * since these tests need combinations -- a null contact_phone alongside
+     * a set contact_bsuid, or vice versa, or an explicit wamid -- that
+     * signature cannot express. Always DIRECTION_INBOUND: every test that
+     * needs this level of control is inbound-only (WindowState only ever
+     * matches inbound rows). Same double-save force-write of created_at as
+     * seedMessage() -- Eloquent stamps "now" on the first save() regardless
+     * of what was assigned before it, so the caller's value is reapplied and
+     * saved again afterwards.
+     */
+    protected function seedInboundRow(KapsoAccount $account, Conversation $conversation, array $attrs): KapsoMessage
+    {
+        $createdAt = $attrs['created_at'];
+        unset($attrs['created_at']);
+
+        $row = new KapsoMessage();
+        $row->account_id      = $account->id;
+        $row->conversation_id = $conversation->id;
+        $row->direction       = KapsoMessage::DIRECTION_INBOUND;
+        $row->status          = 'received';
+        $row->fill($attrs);
+        $row->save();
+
+        $row->created_at = $createdAt;
+        $row->save();
+
+        return $row;
+    }
+
+    /**
      * Fires the `conversation.after_subject_block` action exactly the way
      * resources/views/conversations/view.blade.php:231 does
      * (@action('conversation.after_subject_block', $conversation, $mailbox))
@@ -512,5 +544,71 @@ class WindowBannerTest extends TestCase
         $this->assertStringNotContainsString('data-kwa-block-reply', $withEmailHtml);
         $this->assertStringContainsString('data-kwa-window-closed', $noEmailHtml);
         $this->assertStringContainsString('data-kwa-window-closed', $withEmailHtml);
+    }
+
+    /**
+     * Task 7 of Stage 5: WindowState::compute() must match a contact across
+     * BOTH identities, not just contact_phone, so the window survives a
+     * customer's phone -> username (BSUID) transition. Placed here rather
+     * than in WindowStateTest.php per this brief's file list, using
+     * seedInboundRow() above (seedMessage() cannot express a null phone
+     * alongside a set bsuid or vice versa).
+     */
+    public function test_window_bridges_the_phone_to_bsuid_transition()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        // Phone-only era (old row, window long closed on its own):
+        $this->seedInboundRow($account, $conversation, [
+            'wamid'         => 'wamid.win.p1',
+            'contact_phone' => '+4915177777710',
+            'contact_bsuid' => null,
+            'created_at'    => now()->subDays(10),
+        ]);
+        // Transition era (both identities) on a SECOND conversation:
+        $other = $this->makeConversation($account);
+        $this->seedInboundRow($account, $other, [
+            'wamid'         => 'wamid.win.p2',
+            'contact_phone' => '+4915177777710',
+            'contact_bsuid' => 'US.Window1',
+            'created_at'    => now()->subDays(5),
+        ]);
+        // Username era (bsuid only), newest, on the second conversation:
+        $this->seedInboundRow($account, $other, [
+            'wamid'         => 'wamid.win.p3',
+            'contact_phone' => null,
+            'contact_bsuid' => 'US.Window1',
+            'created_at'    => now()->subHours(2),
+        ]);
+
+        // Asking about the FIRST (phone-era) conversation must see the
+        // bsuid-only message from 2h ago via the both-ids bridge row:
+        $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation->fresh());
+
+        $this->assertNotNull($state);
+        $this->assertTrue($state['open']);
+        $this->assertSame(
+            now()->subHours(2)->toDateString(),
+            $state['last_inbound_at']->toDateString()
+        );
+    }
+
+    public function test_window_for_a_bsuid_only_contact()
+    {
+        $account      = $this->makeAccount();
+        $conversation = $this->makeConversation($account);
+
+        $this->seedInboundRow($account, $conversation, [
+            'wamid'         => 'wamid.win.b1',
+            'contact_phone' => null,
+            'contact_bsuid' => 'US.Window2',
+            'created_at'    => now()->subHours(30),
+        ]);
+
+        $state = \Modules\KapsoWhatsApp\Services\WindowState::forConversation($conversation->fresh());
+
+        $this->assertNotNull($state);
+        $this->assertFalse($state['open'], '30h old inbound means the 24h window is closed');
     }
 }

@@ -108,25 +108,91 @@ class WindowState
             return null;
         }
 
-        // Re-query across every conversation for this (account, contact)
-        // pair -- not just this conversation -- so a customer who also wrote
-        // on a different (newer) conversation still reopens this one's
-        // window. Ordered by created_at, not id: created_at is the value
-        // that actually decides openness, and this module's own fixtures
-        // (and any future backfill) may not insert rows in timestamp order.
-        $last = KapsoMessage::where('account_id', $anchor->account_id)
-            ->where('contact_phone', $anchor->contact_phone)
+        // Re-query across every conversation for this (account, CONTACT)
+        // pair -- not just this conversation -- so a customer who also
+        // wrote on a different (newer) conversation still reopens this
+        // one's window. "Contact" spans both identities (Stage 5): rows
+        // match on the anchor's bsuid OR its phone, whichever are present,
+        // so the window stays continuous across the phone -> bsuid
+        // transition (pre-username phone-only rows and post-username
+        // bsuid-only rows bridge through the both-ids rows between them).
+        //
+        // A single pass matching only the anchor's OWN identity is not
+        // enough to bridge a genuinely phone-only anchor to a later,
+        // genuinely bsuid-only row: they share no field in common and are
+        // connected only through an intermediate "both-ids" row (one
+        // ProcessInboundMessage does write, when a webhook carries both a
+        // phone and a bsuid). So this runs in two passes: first collect
+        // every phone/bsuid that co-occurs with the anchor's own identity
+        // (or, when the anchor itself carries neither, the anchor row
+        // alone) on any inbound row for this account; then re-query using
+        // that expanded identity set. One expansion pass is sufficient --
+        // Stage 5's phone -> bsuid transition produces at most one bridge
+        // hop, and nothing in this module ever writes a third, disjoint
+        // identity onto the same contact.
+        $identityMatch = function ($query) use ($anchor) {
+            $matched = false;
+
+            if ($anchor->contact_bsuid) {
+                $query->orWhere('contact_bsuid', $anchor->contact_bsuid);
+                $matched = true;
+            }
+
+            if ($anchor->contact_phone) {
+                $query->orWhere('contact_phone', $anchor->contact_phone);
+                $matched = true;
+            }
+
+            if (!$matched) {
+                // Anchor with neither identity (pre-Stage-5 edge rows):
+                // the anchor itself is the only row we can honestly
+                // attribute to this contact.
+                $query->orWhere('id', $anchor->id);
+            }
+        };
+
+        $bridge = KapsoMessage::where('account_id', $anchor->account_id)
             ->where('direction', KapsoMessage::DIRECTION_INBOUND)
+            ->where($identityMatch)
+            ->get(['contact_phone', 'contact_bsuid']);
+
+        $phones = $bridge->pluck('contact_phone')->filter()->unique()->values()->all();
+        $bsuids = $bridge->pluck('contact_bsuid')->filter()->unique()->values()->all();
+
+        // Ordered by created_at, not id: created_at is the value that
+        // actually decides openness, and this module's own fixtures (and
+        // any future backfill) may not insert rows in timestamp order.
+        $last = KapsoMessage::where('account_id', $anchor->account_id)
+            ->where('direction', KapsoMessage::DIRECTION_INBOUND)
+            ->where(function ($query) use ($anchor, $phones, $bsuids) {
+                $matched = false;
+
+                if ($bsuids) {
+                    $query->orWhereIn('contact_bsuid', $bsuids);
+                    $matched = true;
+                }
+
+                if ($phones) {
+                    $query->orWhereIn('contact_phone', $phones);
+                    $matched = true;
+                }
+
+                if (!$matched) {
+                    $query->orWhere('id', $anchor->id);
+                }
+            })
             ->orderBy('created_at', 'desc')
             ->first();
 
         // Unreachable today: $anchor is itself always among the rows this
-        // second query considers (same account_id/contact_phone/direction),
-        // so $last can never come back empty here. Insurance against the
-        // null-to-whereNull nuance Eloquent's query builder has around
-        // ->where(column, null) versus ->whereNull(column), in case a future
-        // refactor of the query above changes that -- fail safe instead of
-        // calling ->created_at on null.
+        // final query considers -- either its own phone/bsuid landed in
+        // $phones/$bsuids (it was one of the rows the bridge query above
+        // matched), or neither identity was set and the id fallback catches
+        // it directly -- so $last can never come back empty here. Insurance
+        // against the null-to-whereNull nuance Eloquent's query builder has
+        // around ->where(column, null) versus ->whereNull(column), in case a
+        // future refactor of the query above changes that -- fail safe
+        // instead of calling ->created_at on null.
         if (!$last) {
             return null;
         }
