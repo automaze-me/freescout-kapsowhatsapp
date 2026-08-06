@@ -2,6 +2,8 @@
 
 namespace Modules\KapsoWhatsApp\Services;
 
+use App\Customer;
+use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoContact;
 
 /**
@@ -75,6 +77,48 @@ class ContactDirectory
                 ?? null,
             $message['username'] ?? $conversation['username'] ?? null
         );
+    }
+
+    /**
+     * Backfill vector for outbound webhooks (spec D12): `sent`/`failed`
+     * events and delivery receipts carry both identifiers for as long as
+     * the transition lasts, and they are the ONLY mapping vector for
+     * customers who are messaged but never write inbound again before
+     * adopting a username. Bails cheaply in the common cases (no bsuid,
+     * already mapped, no phone to resolve a customer by). Callers wrap
+     * this in try/catch -- capture must never fail message handling.
+     */
+    public function captureFromWebhook(array $payload): void
+    {
+        $identity = $this->extractOutbound($payload);
+        $bsuid    = $identity['bsuid'];
+
+        if (!$bsuid || $this->customerIdFor($bsuid) !== null) {
+            return;
+        }
+
+        $defaultCountryCode = PhoneNumber::configuredDefaultCountryCode();
+
+        $e164 = PhoneNumber::toE164($payload['conversation']['phone_number'] ?? null, $defaultCountryCode)
+            ?: PhoneNumber::toE164($payload['message']['to'] ?? null, $defaultCountryCode)
+            ?: PhoneNumber::toE164($payload['message']['from'] ?? null, $defaultCountryCode);
+
+        if (!$e164) {
+            return;
+        }
+
+        $customer = Customer::getCustomerByChannel(KapsoAccount::CHANNEL, $e164)
+            ?: (new CustomerResolver())->findUniqueByPhone($e164);
+
+        if (!$customer) {
+            return;
+        }
+
+        $this->record($bsuid, $customer->id, [
+            'phone'        => $e164,
+            'username'     => $identity['username'],
+            'parent_bsuid' => $identity['parent_bsuid'],
+        ]);
     }
 
     public function customerIdFor(?string $bsuid): ?int

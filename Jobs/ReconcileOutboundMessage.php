@@ -11,6 +11,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\ContactDirectory;
 use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\MessageBody;
 use Modules\KapsoWhatsApp\Services\PhoneNumber;
@@ -76,6 +77,15 @@ class ReconcileOutboundMessage implements ShouldQueue
             return;
         }
 
+        try {
+            (new ContactDirectory())->captureFromWebhook($this->payload);
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] Contact capture threw while reconciling an outbound event', [
+                'event'     => $this->event,
+                'exception' => $e,
+            ]);
+        }
+
         $message = $this->payload['message'] ?? [];
         $wamid   = $message['id'] ?? null;
 
@@ -121,7 +131,7 @@ class ReconcileOutboundMessage implements ShouldQueue
      */
     protected function recordForeignSend(KapsoAccount $account, array $message, $wamid)
     {
-        [$e164, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'sent');
+        [$e164, $bsuid, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'sent');
 
         if (!$conversationId) {
             // Already logged by resolveOutboundConversation() -- both the
@@ -140,7 +150,7 @@ class ReconcileOutboundMessage implements ShouldQueue
         $body = MessageBody::extract($message);
 
         try {
-            \DB::transaction(function () use ($account, $conversation, $message, $wamid, $body, $e164) {
+            \DB::transaction(function () use ($account, $conversation, $message, $wamid, $body, $e164, $bsuid) {
                 $thread = new Thread();
                 $thread->conversation_id = $conversation->id;
                 $thread->user_id         = null;
@@ -201,6 +211,7 @@ class ReconcileOutboundMessage implements ShouldQueue
                     'status'                => $message['kapso']['status'] ?? 'sent',
                     'is_reaction'           => false,
                     'contact_phone'         => $e164,
+                    'contact_bsuid'         => $bsuid,
                 ]);
 
                 $conversation->last_reply_at   = now();
@@ -336,7 +347,7 @@ class ReconcileOutboundMessage implements ShouldQueue
      */
     protected function recordFailureForUnknownSend(KapsoAccount $account, array $message, $wamid, $summary)
     {
-        [$e164, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'failed');
+        [$e164, $bsuid, $conversationId] = $this->resolveOutboundConversation($account, $message, $wamid, 'failed');
 
         $conversation = $conversationId ? Conversation::find($conversationId) : null;
 
@@ -350,7 +361,7 @@ class ReconcileOutboundMessage implements ShouldQueue
         $body = MessageBody::extract($message);
 
         try {
-            \DB::transaction(function () use ($account, $conversation, $wamid, $body, $e164, $summary) {
+            \DB::transaction(function () use ($account, $conversation, $wamid, $body, $e164, $bsuid, $summary) {
                 $thread = new Thread();
                 $thread->conversation_id = $conversation->id;
                 $thread->user_id         = null;
@@ -390,6 +401,7 @@ class ReconcileOutboundMessage implements ShouldQueue
                     'error'                 => $summary,
                     'is_reaction'           => false,
                     'contact_phone'         => $e164,
+                    'contact_bsuid'         => $bsuid,
                 ]);
 
                 // No marker to clear on this path: `thread_id` here points at
@@ -534,15 +546,19 @@ class ReconcileOutboundMessage implements ShouldQueue
      *     against this module's own message history for the account.
      *  2. `conversation.phone_number` -- a second, independent field Kapso
      *     may populate even when `to` is missing -- matched the same way.
-     *  3. `kapso_conversation_id`, written on every row this module creates
+     *  3. The recipient BSUID, matched against this module's own message
+     *     history: the identity that keeps working when the payload
+     *     carries no phone at all (Stage 5).
+     *  4. `kapso_conversation_id`, written on every row this module creates
      *     and otherwise never read anywhere: the one identity that survives
-     *     even when the payload carries no usable phone number at all.
+     *     even when the payload carries no usable phone number or BSUID at
+     *     all.
      *
      * Every dead end is logged (with $label distinguishing a `sent` event
      * from a `failed` one) rather than silently dropped, so a vanishing
      * event always leaves a trace to investigate.
      *
-     * @return array{0: ?string, 1: ?int} [$e164, $conversationId]
+     * @return array{0: ?string, 1: ?string, 2: ?int} [$e164, $bsuid, $conversationId]
      */
     protected function resolveOutboundConversation(KapsoAccount $account, array $message, $wamid, $label)
     {
@@ -551,7 +567,20 @@ class ReconcileOutboundMessage implements ShouldQueue
         $e164 = PhoneNumber::toE164($message['to'] ?? null, $defaultCountryCode)
             ?: PhoneNumber::toE164($this->payload['conversation']['phone_number'] ?? null, $defaultCountryCode);
 
+        $bsuid = (new ContactDirectory())->extractOutbound($this->payload)['bsuid'];
+
         $conversationId = $e164 ? $this->resolveConversationId($account, $e164) : null;
+
+        if (!$conversationId && $bsuid) {
+            // Same latest-row shape as resolveConversationId(), keyed on
+            // the bsuid instead: the identity that keeps working when the
+            // payload carries no phone at all (Stage 5).
+            $conversationId = KapsoMessage::where('contact_bsuid', $bsuid)
+                ->where('account_id', $account->id)
+                ->whereNotNull('conversation_id')
+                ->orderBy('id', 'desc')
+                ->value('conversation_id');
+        }
 
         if (!$conversationId) {
             $kapsoConversationId = $this->payload['conversation']['id'] ?? null;
@@ -566,13 +595,13 @@ class ReconcileOutboundMessage implements ShouldQueue
         }
 
         if (!$conversationId) {
-            if ($e164) {
+            if ($e164 || $bsuid) {
                 \Log::info("[KapsoWhatsApp] Outbound {$label} event for an unknown conversation, dropped", ['wamid' => $wamid]);
             } else {
-                \Log::info("[KapsoWhatsApp] Outbound {$label} event with no usable recipient identity (no `to`, no `conversation.phone_number`, no matching `kapso_conversation_id`), dropped", ['wamid' => $wamid]);
+                \Log::info("[KapsoWhatsApp] Outbound {$label} event with no usable recipient identity (no `to`, no `conversation.phone_number`, no BSUID, no matching `kapso_conversation_id`), dropped", ['wamid' => $wamid]);
             }
         }
 
-        return [$e164, $conversationId];
+        return [$e164, $bsuid, $conversationId];
     }
 }
