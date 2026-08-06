@@ -16,6 +16,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\ContactDirectory;
 use Modules\KapsoWhatsApp\Services\ConversationResolver;
 use Modules\KapsoWhatsApp\Services\CustomerResolver;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
@@ -67,16 +68,20 @@ class ProcessInboundMessage implements ShouldQueue
             return;
         }
 
-        $e164 = PhoneNumber::toE164($message['from'] ?? null, PhoneNumber::configuredDefaultCountryCode());
+        $identity = (new ContactDirectory())->extractInbound($this->payload);
+        $e164     = PhoneNumber::toE164($message['from'] ?? null, PhoneNumber::configuredDefaultCountryCode());
 
-        if (!$e164) {
-            \Log::warning('[KapsoWhatsApp] Inbound message without a usable sender number', ['wamid' => $wamid]);
+        if (!$e164 && !$identity['bsuid']) {
+            // Only a payload with NO usable identity at all is dropped --
+            // phoneless messages from username adopters carry a bsuid and
+            // must land (Stage 5; previously this dropped them silently).
+            \Log::warning('[KapsoWhatsApp] Inbound message without any usable sender identity (no phone, no BSUID)', ['wamid' => $wamid]);
 
             return;
         }
 
         if (($message['type'] ?? '') === 'reaction') {
-            $this->applyReaction($account, $message, $wamid, $e164);
+            $this->applyReaction($account, $message, $wamid, $e164, $identity);
 
             return;
         }
@@ -92,7 +97,7 @@ class ProcessInboundMessage implements ShouldQueue
         $contactName = $this->payload['conversation']['kapso']['contact_name']
             ?? ($this->payload['conversation']['contact_name'] ?? null);
 
-        $customer = (new CustomerResolver())->resolve($e164, $contactName);
+        $customer = (new CustomerResolver())->resolve($e164, $contactName, $identity);
 
         $body = $this->body($message);
 
@@ -111,7 +116,7 @@ class ProcessInboundMessage implements ShouldQueue
 
         try {
             \DB::transaction(function () use (
-                $account, $mailbox, $customer, $message, $wamid, $body, $e164,
+                $account, $mailbox, $customer, $message, $wamid, $body, $e164, $identity,
                 &$conversation, &$thread, &$kapsoMessage
             ) {
                 $resolved     = (new ConversationResolver())->resolve($customer, $mailbox, Conversation::subjectFromText($body['raw']));
@@ -149,6 +154,7 @@ class ProcessInboundMessage implements ShouldQueue
                     'status'                => $message['kapso']['status'] ?? 'received',
                     'is_reaction'           => false,
                     'contact_phone'         => $e164,
+                    'contact_bsuid'         => $identity['bsuid'],
                 ]);
 
                 // Match core's ordering (Thread.php:1170/1227, FetchEmails.php:1246-1247/1318):
@@ -343,7 +349,7 @@ class ProcessInboundMessage implements ShouldQueue
      * map there is nothing to attach them to, so an unplaceable reaction is
      * dropped rather than surfacing as a stray thread.
      */
-    protected function applyReaction(KapsoAccount $account, array $message, $wamid, $e164)
+    protected function applyReaction(KapsoAccount $account, array $message, $wamid, $e164, array $identity)
     {
         $targetWamid = $message['reaction']['message_id'] ?? null;
         $emoji       = $message['reaction']['emoji'] ?? '';
@@ -413,6 +419,7 @@ class ProcessInboundMessage implements ShouldQueue
                 'direction'             => KapsoMessage::DIRECTION_INBOUND,
                 'is_reaction'           => true,
                 'contact_phone'         => $e164,
+                'contact_bsuid'         => $identity['bsuid'],
             ]);
         } catch (\Illuminate\Database\QueryException $e) {
             // Same race the main inbound path guards against: the unique
