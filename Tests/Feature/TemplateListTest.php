@@ -53,6 +53,22 @@ class TemplateListTest extends TestCase
         return $account;
     }
 
+    /**
+     * Thin helper: fakes a single templates-list response carrying the given
+     * `data` array and returns whatever listMessageTemplates() makes of it.
+     * Mirrors the faking style every test above already uses inline
+     * (fakeResponses() + a `data` envelope) rather than inventing a second
+     * one.
+     */
+    protected function listWithTemplates(array $templates): array
+    {
+        $this->fakeResponses([
+            new Response(200, [], json_encode(['data' => $templates])),
+        ]);
+
+        return (new KapsoClient($this->account()))->listMessageTemplates();
+    }
+
     public function test_the_list_is_fetched_from_the_business_account_endpoint()
     {
         $this->fakeResponses([
@@ -267,5 +283,29 @@ class TemplateListTest extends TestCase
             $this->assertSame(401, $e->getHttpStatus());
             $this->assertStringContainsString('API key', $e->getMessage());
         }
+    }
+
+    public function test_authentication_category_templates_are_never_eligible()
+    {
+        // A copy-code auth template passes every structural check (text-only
+        // positional body, OTP button with static text) -- only the category
+        // identifies it. Meta requires a button OTP parameter this module's
+        // body-only send path cannot supply, and auth templates cannot be
+        // delivered to BSUIDs at all (error 131062), so the category is
+        // excluded outright.
+        $eligible = $this->listWithTemplates([[
+            'name'       => 'auth_code',
+            'status'     => 'APPROVED',
+            'language'   => 'en_US',
+            'category'   => 'AUTHENTICATION',
+            'components' => [
+                ['type' => 'BODY', 'text' => '{{1}} is your verification code.'],
+                ['type' => 'BUTTONS', 'buttons' => [
+                    ['type' => 'OTP', 'otp_type' => 'COPY_CODE', 'text' => 'Copy code'],
+                ]],
+            ],
+        ]]);
+
+        $this->assertSame([], $eligible);
     }
 }

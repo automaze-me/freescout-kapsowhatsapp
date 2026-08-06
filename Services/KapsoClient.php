@@ -355,6 +355,17 @@ class KapsoClient
             return null;
         }
 
+        // AUTHENTICATION templates (one-tap / zero-tap / copy-code) are
+        // excluded by category, not structure: a copy-code template passes
+        // every structural check below, but Meta requires a button OTP
+        // parameter this module's body-parameters-only send path cannot
+        // supply -- and auth templates cannot be delivered to BSUIDs at
+        // all (error 131062).
+        if (isset($template['category']) && is_string($template['category'])
+            && strtoupper($template['category']) === 'AUTHENTICATION') {
+            return null;
+        }
+
         if (!isset($template['name']) || !is_string($template['name']) || $template['name'] === '') {
             return null;
         }

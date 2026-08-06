@@ -93,17 +93,18 @@ class SendTemplateMessage implements ShouldQueue
 
         ['thread' => $thread, 'conversation' => $conversation, 'latestInbound' => $latestInbound, 'account' => $account] = $context;
 
-        // Same split as SendReplyMessage::handle(): Meta's `to` wants bare
-        // international digits, but the claim row's own contact_phone
-        // column must stay "+"-prefixed E.164, verbatim from the inbound
-        // row, so ReconcileOutboundMessage::resolveConversationId()'s exact
-        // match against that column keeps working.
-        $contactPhone = (string) $latestInbound->contact_phone;
-        $to           = preg_replace('/\D+/', '', $contactPhone);
-        $client       = new KapsoClient($account);
+        $address = $latestInbound->sendAddress();
+
+        if ($address === null) {
+            $this->finalizeFailure($thread, $conversation, __('The template message could not be delivered to WhatsApp: the contact has no valid WhatsApp address.'));
+
+            return;
+        }
+
+        $client = new KapsoClient($account);
 
         try {
-            $this->claimAndSend($client, $account, $conversation, $thread, $to, $contactPhone);
+            $this->claimAndSend($client, $account, $conversation, $thread, $address, $latestInbound);
         } catch (KapsoApiException $e) {
             if ($this->attempts() < $this->tries) {
                 // Not the final attempt: rethrow so Laravel's queue retries
@@ -154,7 +155,12 @@ class SendTemplateMessage implements ShouldQueue
 
         $latestInbound = KapsoMessage::where('conversation_id', $conversation->id)
             ->where('direction', KapsoMessage::DIRECTION_INBOUND)
-            ->whereNotNull('contact_phone')
+            ->where(function ($query) {
+                // Either identity qualifies a row as "the contact to answer"
+                // (Stage 5): phoneless rows from username adopters carry
+                // only a bsuid.
+                $query->whereNotNull('contact_phone')->orWhereNotNull('contact_bsuid');
+            })
             ->orderByDesc('id')
             ->first();
 
@@ -183,7 +189,7 @@ class SendTemplateMessage implements ShouldQueue
         return compact('thread', 'conversation', 'latestInbound', 'account');
     }
 
-    protected function buildPayload($to)
+    protected function buildPayload(array $address)
     {
         $template = [
             'name'     => $this->templateName,
@@ -199,11 +205,9 @@ class SendTemplateMessage implements ShouldQueue
             ]];
         }
 
-        return [
-            'messaging_product' => 'whatsapp',
-            'to'                => $to,
-            'type'              => 'template',
-            'template'          => $template,
+        return ['messaging_product' => 'whatsapp'] + $address + [
+            'type'     => 'template',
+            'template' => $template,
         ];
     }
 
@@ -217,7 +221,7 @@ class SendTemplateMessage implements ShouldQueue
      * assuming, and why only send_state/wamid (never the query race itself)
      * decides "already sent".
      */
-    protected function claimAndSend(KapsoClient $client, KapsoAccount $account, Conversation $conversation, Thread $thread, $to, $contactPhone)
+    protected function claimAndSend(KapsoClient $client, KapsoAccount $account, Conversation $conversation, Thread $thread, array $address, KapsoMessage $latestInbound)
     {
         $row = new KapsoMessage();
         $row->account_id      = $account->id;
@@ -226,8 +230,11 @@ class SendTemplateMessage implements ShouldQueue
         $row->part_key        = KapsoMessage::PART_TEMPLATE;
         $row->direction       = KapsoMessage::DIRECTION_OUTBOUND;
         $row->send_state      = KapsoMessage::SEND_STATE_SENDING;
-        // Verbatim -- see the comment in handle() building $contactPhone.
-        $row->contact_phone   = $contactPhone;
+        // Verbatim from the inbound row -- see SendReplyMessage::
+        // claimAndSend()'s identical comment for why both columns must
+        // keep their stored formats.
+        $row->contact_phone = $latestInbound->contact_phone;
+        $row->contact_bsuid = $latestInbound->contact_bsuid;
 
         try {
             $row->save();
@@ -251,7 +258,7 @@ class SendTemplateMessage implements ShouldQueue
             $row->save();
         }
 
-        $response = $client->sendWhatsAppMessage($this->buildPayload($to));
+        $response = $client->sendWhatsAppMessage($this->buildPayload($address));
 
         // extractWamid() returns null rather than throwing for a
         // malformed-but-2xx response -- see SendReplyMessage::claimAndSend()'s
