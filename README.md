@@ -187,6 +187,25 @@ modules; 103 and 104 are assigned to the `MetaWhatsApp` community module, so the
 coexist. Earlier releases used code 102 — a bundled migration remaps existing conversations
 and customer channels on upgrade.
 
+## Business-scoped user IDs (BSUIDs)
+
+Meta is replacing phone numbers with business-scoped user IDs as the primary
+WhatsApp identifier: customers who adopt a WhatsApp username stop transmitting
+their phone number in webhooks. This module handles both identities:
+
+- Inbound messages are matched **BSUID-first, phone second**; phoneless
+  messages create and resolve customers normally (named from the WhatsApp
+  profile name, username, or BSUID).
+- While both identifiers still arrive together, every webhook (inbound and
+  status events alike) records the BSUID→customer mapping in
+  `kapso_whatsapp_contacts` — install the update early so this backfill
+  window is not missed.
+- Replies and template sends to phoneless contacts are addressed with Meta's
+  `recipient` field automatically. Authentication-category templates are
+  excluded from the template picker (Meta cannot deliver them to BSUIDs, and
+  their one-time-code button parameters are unsupported here anyway).
+- The 24-hour service window follows the contact across both identities.
+
 ## Testing
 
 The suite runs inside a FreeScout development installation. One-time setup, from the FreeScout
