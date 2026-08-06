@@ -99,10 +99,10 @@ class ContactDirectory
      */
     public function record(string $bsuid, int $customerId, array $attrs = []): void
     {
-        try {
-            $contact = KapsoContact::where('bsuid', $bsuid)->first();
+        $contact = KapsoContact::where('bsuid', $bsuid)->first();
 
-            if (!$contact) {
+        if (!$contact) {
+            try {
                 KapsoContact::create([
                     'bsuid'        => $bsuid,
                     'customer_id'  => $customerId,
@@ -110,29 +110,29 @@ class ContactDirectory
                     'username'     => $attrs['username'] ?? null,
                     'parent_bsuid' => $attrs['parent_bsuid'] ?? null,
                 ]);
-
-                return;
-            }
-
-            $dirty = false;
-
-            foreach (['phone', 'username', 'parent_bsuid'] as $field) {
-                if (!empty($attrs[$field]) && $contact->{$field} !== $attrs[$field]) {
-                    $contact->{$field} = $attrs[$field];
-                    $dirty = true;
+            } catch (\Illuminate\Database\QueryException $e) {
+                // Module convention (ProcessInboundMessage, SendReplyMessage):
+                // catch broadly, re-check, and only swallow when the re-check
+                // proves a concurrent writer won the unique-index race.
+                if (!KapsoContact::where('bsuid', $bsuid)->exists()) {
+                    throw $e;
                 }
             }
 
-            if ($dirty) {
-                $contact->save();
+            return;
+        }
+
+        $dirty = false;
+
+        foreach (['phone', 'username', 'parent_bsuid'] as $field) {
+            if (!empty($attrs[$field]) && $contact->{$field} !== $attrs[$field]) {
+                $contact->{$field} = $attrs[$field];
+                $dirty = true;
             }
-        } catch (\Illuminate\Database\QueryException $e) {
-            // Module convention (ProcessInboundMessage, SendReplyMessage):
-            // catch broadly, re-check, and only swallow when the re-check
-            // proves a concurrent writer won the unique-index race.
-            if (!KapsoContact::where('bsuid', $bsuid)->exists()) {
-                throw $e;
-            }
+        }
+
+        if ($dirty) {
+            $contact->save();
         }
     }
 
