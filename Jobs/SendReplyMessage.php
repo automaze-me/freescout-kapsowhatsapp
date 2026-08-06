@@ -114,24 +114,22 @@ class SendReplyMessage implements ShouldQueue
 
         ['thread' => $thread, 'conversation' => $conversation, 'latestInbound' => $latestInbound, 'account' => $account] = $context;
 
-        // Kapso's Meta proxy wants bare international digits for `to`, but
-        // the row's own `contact_phone` column must stay in the same format
-        // ProcessInboundMessage/ReconcileOutboundMessage write everywhere
-        // else -- "+" followed by digits (PhoneNumber::toE164()) -- because
-        // ReconcileOutboundMessage::resolveConversationId() exact-matches
-        // that column against a freshly-computed E.164 value. Stripping the
-        // "+" for the stored column, as an earlier version of this job did,
-        // silently orphaned every future reconciliation lookup for these
-        // rows while leaving all tests green. The digit-stripping is kept
-        // local to $to (the payload value); $latestInbound->contact_phone is
-        // carried through verbatim for the row.
-        $contactPhone = (string) $latestInbound->contact_phone;
-        $to           = preg_replace('/\D+/', '', $contactPhone);
-        $client       = new KapsoClient($account);
+        $address = $latestInbound->sendAddress();
+
+        if ($address === null) {
+            // guards() accepted the row for having SOME identity, but
+            // neither leg is usable (e.g. a malformed bsuid and no phone).
+            // Persistent, not a race -- finalize instead of burning retries.
+            $this->finalizeFailure($thread, $conversation, __('The reply could not be delivered to WhatsApp: the contact has no valid WhatsApp address.'));
+
+            return;
+        }
+
+        $client = new KapsoClient($account);
 
         foreach ($this->parts($thread) as $part) {
             try {
-                $this->claimAndSend($client, $account, $conversation, $thread, $part, $to, $contactPhone);
+                $this->claimAndSend($client, $account, $conversation, $thread, $part, $address, $latestInbound);
             } catch (KapsoApiException $e) {
                 if ($this->attempts() < $this->tries) {
                     // Not the final attempt: rethrow so Laravel's queue
@@ -191,7 +189,12 @@ class SendReplyMessage implements ShouldQueue
 
         $latestInbound = KapsoMessage::where('conversation_id', $conversation->id)
             ->where('direction', KapsoMessage::DIRECTION_INBOUND)
-            ->whereNotNull('contact_phone')
+            ->where(function ($query) {
+                // Either identity qualifies a row as "the contact to answer"
+                // (Stage 5): phoneless rows from username adopters carry
+                // only a bsuid.
+                $query->whereNotNull('contact_phone')->orWhereNotNull('contact_bsuid');
+            })
             ->orderByDesc('id')
             ->first();
 
@@ -340,14 +343,12 @@ class SendReplyMessage implements ShouldQueue
         return $url;
     }
 
-    protected function buildPayload($to, array $part)
+    protected function buildPayload(array $address, array $part)
     {
         if ($part['type'] === 'text') {
-            return [
-                'messaging_product' => 'whatsapp',
-                'to'                => $to,
-                'type'              => 'text',
-                'text'              => ['body' => $part['body']],
+            return ['messaging_product' => 'whatsapp'] + $address + [
+                'type' => 'text',
+                'text' => ['body' => $part['body']],
             ];
         }
 
@@ -358,11 +359,9 @@ class SendReplyMessage implements ShouldQueue
                 $image['caption'] = $part['caption'];
             }
 
-            return [
-                'messaging_product' => 'whatsapp',
-                'to'                => $to,
-                'type'              => 'image',
-                'image'             => $image,
+            return ['messaging_product' => 'whatsapp'] + $address + [
+                'type'  => 'image',
+                'image' => $image,
             ];
         }
 
@@ -372,11 +371,9 @@ class SendReplyMessage implements ShouldQueue
             $document['caption'] = $part['caption'];
         }
 
-        return [
-            'messaging_product' => 'whatsapp',
-            'to'                => $to,
-            'type'              => 'document',
-            'document'          => $document,
+        return ['messaging_product' => 'whatsapp'] + $address + [
+            'type'     => 'document',
+            'document' => $document,
         ];
     }
 
@@ -392,7 +389,7 @@ class SendReplyMessage implements ShouldQueue
      * part" if that query actually finds a row, otherwise rethrow -- so an
      * unrelated DB failure is never silently swallowed as a claim race.
      */
-    protected function claimAndSend(KapsoClient $client, KapsoAccount $account, Conversation $conversation, Thread $thread, array $part, $to, $contactPhone)
+    protected function claimAndSend(KapsoClient $client, KapsoAccount $account, Conversation $conversation, Thread $thread, array $part, array $address, KapsoMessage $latestInbound)
     {
         $row = new KapsoMessage();
         $row->account_id      = $account->id;
@@ -401,10 +398,15 @@ class SendReplyMessage implements ShouldQueue
         $row->part_key        = $part['part_key'];
         $row->direction       = KapsoMessage::DIRECTION_OUTBOUND;
         $row->send_state      = KapsoMessage::SEND_STATE_SENDING;
-        // Verbatim -- see the comment in handle() building $contactPhone:
-        // this column's format must match every other writer's (the "+"
-        // prefixed E.164 value), not the bare digits Meta's API wants.
-        $row->contact_phone   = $contactPhone;
+        // Verbatim from the inbound row -- contact_phone must stay in the
+        // "+"-prefixed E.164 format every other writer uses, because
+        // ReconcileOutboundMessage::resolveConversationId() exact-matches
+        // that column; contact_bsuid is case-preserved verbatim for the
+        // same reason (WindowState and the reconcile BSUID leg match it
+        // exactly). The bare-digit stripping lives only inside
+        // sendAddress()'s `to` value.
+        $row->contact_phone = $latestInbound->contact_phone;
+        $row->contact_bsuid = $latestInbound->contact_bsuid;
 
         if ($part['attachment_id']) {
             $row->attachment_id = $part['attachment_id'];
@@ -433,7 +435,7 @@ class SendReplyMessage implements ShouldQueue
             $row->save();
         }
 
-        $response = $client->sendWhatsAppMessage($this->buildPayload($to, $part));
+        $response = $client->sendWhatsAppMessage($this->buildPayload($address, $part));
 
         // extractWamid() returns null, rather than throwing, for a
         // malformed-but-2xx response (no `messages[0].id`): the part still

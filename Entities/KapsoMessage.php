@@ -3,6 +3,7 @@
 namespace Modules\KapsoWhatsApp\Entities;
 
 use Illuminate\Database\Eloquent\Model;
+use Modules\KapsoWhatsApp\Services\ContactDirectory;
 
 class KapsoMessage extends Model
 {
@@ -164,5 +165,26 @@ class KapsoMessage extends Model
     public function eventsDispatched(): bool
     {
         return (bool) $this->events_dispatched_at;
+    }
+
+    /**
+     * How to address a Meta-proxy send for this row's contact (Stage 5):
+     * `['to' => <bare international digits>]` when the row carries a phone
+     * -- identical to the pre-BSUID behaviour, and what Meta itself
+     * prefers (it ignores `recipient` whenever `to` is present) -- else
+     * `['recipient' => <bsuid>]`, validated so a malformed value is never
+     * sent to Meta; else null: nothing usable to address.
+     */
+    public function sendAddress(): ?array
+    {
+        if ($this->contact_phone) {
+            return ['to' => preg_replace('/\D+/', '', (string) $this->contact_phone)];
+        }
+
+        if (ContactDirectory::isValidBsuid($this->contact_bsuid)) {
+            return ['recipient' => $this->contact_bsuid];
+        }
+
+        return null;
     }
 }
