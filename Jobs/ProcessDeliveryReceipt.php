@@ -9,6 +9,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
+use Modules\KapsoWhatsApp\Services\ContactDirectory;
 
 /**
  * Handles `whatsapp.message.delivered` / `whatsapp.message.read` webhook
@@ -50,6 +51,21 @@ class ProcessDeliveryReceipt implements ShouldQueue
 
     public function handle()
     {
+        // Stage 5 backfill vector (spec D12): receipts carry both contact
+        // identifiers during the transition and are the only mapping
+        // source for customers who never write inbound. Runs before the
+        // wamid guard on purpose -- capture is independent of whether this
+        // receipt matches a row of ours. Try/caught: capture must never
+        // fail receipt handling.
+        try {
+            (new ContactDirectory())->captureFromWebhook($this->payload);
+        } catch (\Throwable $e) {
+            \Log::error('[KapsoWhatsApp] Contact capture threw while processing a delivery receipt', [
+                'event'     => $this->event,
+                'exception' => $e,
+            ]);
+        }
+
         $wamid = $this->payload['message']['id'] ?? null;
 
         if (!is_string($wamid) || $wamid === '') {

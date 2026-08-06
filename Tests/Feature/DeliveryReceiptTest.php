@@ -240,4 +240,31 @@ class DeliveryReceiptTest extends TestCase
         $this->assertNotEmpty($thread->fresh()->getMeta(KapsoMessage::THREAD_META_SENT_AT),
             'the sent marker meta itself must survive -- only its rendering is superseded');
     }
+
+    public function test_a_delivery_receipt_backfills_the_contact_mapping()
+    {
+        $account = $this->makeAccount();
+
+        $customer = \App\Customer::createWithoutEmail(['first_name' => 'Udo', 'last_name' => 'Receipt']);
+        $customer->addChannel(KapsoAccount::CHANNEL, '+4915177777730');
+
+        // No prior mapping:
+        $this->assertNull(
+            \Modules\KapsoWhatsApp\Entities\KapsoContact::where('bsuid', 'US.ReceiptCapture1')->first()
+        );
+
+        $job = new \Modules\KapsoWhatsApp\Jobs\ProcessDeliveryReceipt($account->id, 'whatsapp.message.delivered', [
+            'message' => [
+                'id'         => 'wamid.receipt.unknown1',
+                'to'         => '4915177777730',
+                'to_user_id' => 'US.ReceiptCapture1',
+            ],
+            'conversation' => ['id' => 'conv_receipt_1', 'phone_number' => '4915177777730'],
+        ]);
+        $job->handle();
+
+        $contact = \Modules\KapsoWhatsApp\Entities\KapsoContact::where('bsuid', 'US.ReceiptCapture1')->first();
+        $this->assertNotNull($contact, 'receipts are a mapping vector for customers who never write inbound');
+        $this->assertSame($customer->id, (int) $contact->customer_id);
+    }
 }
