@@ -2,7 +2,7 @@
     "name": "WhatsApp (Kapso)",
     "alias": "kapsowhatsapp",
     "description": "WhatsApp as a communication channel for FreeScout, via the Kapso API.",
-    "version": "0.2.6",
+    "version": "0.3.0",
     "detailsUrl": "https://github.com/automaze-me/freescout-kapsowhatsapp",
     "author": "automaze.me",
     "authorUrl": "https://automaze.me",
