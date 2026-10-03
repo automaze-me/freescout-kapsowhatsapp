@@ -9,9 +9,10 @@ use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 /**
  * The red "WhatsApp delivery failed" line item, shared by the two places a
  * send can die: delivery-time (ReconcileOutboundMessage, Kapso's
- * message.failed) and request-time (SendReplyMessage, after its retries are
- * exhausted). One writer keeps the rendering contract single:
- * LINEITEM_META_DELIVERY_FAILED + the provider's thread.action_text filter.
+ * message.failed) and request-time (SendReplyMessage/SendTemplateMessage,
+ * on a rejection or once their retries are used up). One writer keeps the
+ * rendering contract single: LINEITEM_META_DELIVERY_FAILED + the provider's
+ * thread.action_text filter -- and puts the conversation back to Active.
  */
 class DeliveryFailureLineItem
 {
@@ -44,6 +45,16 @@ class DeliveryFailureLineItem
         $lineItem->customer_id     = $conversation->customer_id;
         $lineItem->setMeta(KapsoMessage::LINEITEM_META_DELIVERY_FAILED, true);
         $lineItem->save();
+
+        // A message that never reached the customer must not sit unnoticed
+        // in a Pending or Closed conversation (seen in production: a reply
+        // sent as Pending failed, and nobody saw this line item until the
+        // customer complained). Back to Active, the same way an inbound
+        // message reopens it, with a recount so the sidebar badge shows it.
+        if (ConversationResolver::reactivate($conversation)) {
+            $conversation->save();
+            $conversation->mailbox->updateFoldersCounters();
+        }
 
         return $lineItem;
     }

@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Jobs\Concerns\RetriesTransientFailures;
 use Modules\KapsoWhatsApp\Services\ChannelChoice;
 use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
@@ -43,7 +44,7 @@ use Modules\KapsoWhatsApp\Services\KapsoClient;
  */
 class SendReplyMessage implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, RetriesTransientFailures;
 
     /**
      * WhatsApp text messages cap at 4096 chars; chunking at 4000 leaves
@@ -131,15 +132,17 @@ class SendReplyMessage implements ShouldQueue
             try {
                 $this->claimAndSend($client, $account, $conversation, $thread, $part, $address, $latestInbound);
             } catch (KapsoApiException $e) {
-                if ($this->attempts() < $this->tries) {
-                    // Not the final attempt: rethrow so Laravel's queue
-                    // retries the whole job. Parts already accepted above
-                    // are skipped on the re-run via their recorded wamid;
-                    // the part that just failed is left `sending` for the
-                    // retry to pick back up.
-                    throw $e;
+                if ($e->isTransient() && $this->retryLater($e)) {
+                    // A later run picks up from here: parts already
+                    // accepted above are skipped via their claim rows, and
+                    // the part that just failed is left `sending` for that
+                    // run to re-claim. See RetriesTransientFailures.
+                    return;
                 }
 
+                // A rejection fails the same way on every retry, and a
+                // transient failure gets here only once the delayed-retry
+                // schedule is used up.
                 $this->finalizeFailure($thread, $conversation, $e->getMessage());
 
                 return;
@@ -147,6 +150,11 @@ class SendReplyMessage implements ShouldQueue
         }
 
         $this->markReadBestEffort($client, $latestInbound);
+    }
+
+    protected function freshRun()
+    {
+        return new static($this->threadId);
     }
 
     /**
@@ -518,9 +526,9 @@ class SendReplyMessage implements ShouldQueue
 
     /**
      * The safety net for everything the try/catch in handle() does not
-     * itself finalize. That catch only recognises KapsoApiException, and on
-     * its own last attempt it finalizes gracefully and *returns* rather than
-     * rethrowing -- precisely so Laravel never marks that job permanently
+     * itself finalize. That catch only recognises KapsoApiException, and it
+     * never rethrows one: it either schedules a delayed retry or finalizes
+     * and *returns* -- precisely so Laravel never marks that job permanently
      * failed and this method is never invoked for it (see the catch's own
      * comment). Anything else that escapes -- a different exception class
      * entirely (a stray ErrorException, a DB hiccup, ...) -- is not caught

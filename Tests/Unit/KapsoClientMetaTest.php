@@ -130,4 +130,69 @@ class KapsoClientMetaTest extends TestCase
         $this->expectException(KapsoApiException::class);
         (new KapsoClient($this->account(), $client))->sendWhatsAppMessage(['to' => 'x']);
     }
+
+    /**
+     * The exception a send raises for one canned response (or transport
+     * exception) -- the send jobs decide between "retry later" and "give up
+     * now" from it alone.
+     */
+    protected function sendFailureFor($responseOrException): KapsoApiException
+    {
+        $history = [];
+        $client  = $this->clientWithHistory([$responseOrException], $history);
+
+        try {
+            (new KapsoClient($this->account(), $client))->sendWhatsAppMessage(['to' => 'x']);
+        } catch (KapsoApiException $e) {
+            return $e;
+        }
+
+        $this->fail('Expected KapsoApiException');
+    }
+
+    /**
+     * Seen in production: a DNS lookup that timed out on the host. Kapso
+     * never saw the request, so a later attempt can succeed.
+     */
+    public function test_an_unreachable_kapso_is_a_transient_failure()
+    {
+        $e = $this->sendFailureFor(new \GuzzleHttp\Exception\ConnectException(
+            'cURL error 28: Resolving timed out after 5002 milliseconds',
+            new \GuzzleHttp\Psr7\Request('POST', 'x')
+        ));
+
+        $this->assertTrue($e->isTransient());
+    }
+
+    public function test_timeouts_rate_limits_and_server_errors_are_transient()
+    {
+        foreach ([408, 429, 500, 502, 503, 504] as $status) {
+            $e = $this->sendFailureFor(new Response($status, [], json_encode(['error' => 'try again'])));
+
+            $this->assertTrue($e->isTransient(), "HTTP $status should be retried later");
+        }
+    }
+
+    public function test_a_rejection_is_not_transient()
+    {
+        foreach ([400, 401, 403, 404, 422] as $status) {
+            $e = $this->sendFailureFor(new Response($status, [], json_encode(['error' => 'no'])));
+
+            $this->assertFalse($e->isTransient(), "HTTP $status fails the same way on every retry");
+        }
+    }
+
+    /**
+     * Also HTTP status 0 (no response was ever received), but nothing a
+     * later attempt could fix on its own.
+     */
+    public function test_a_missing_api_key_is_not_transient()
+    {
+        Settings::setApiKey('');
+
+        $e = $this->sendFailureFor(new Response(200, [], '{}'));
+
+        $this->assertSame(0, $e->getHttpStatus());
+        $this->assertFalse($e->isTransient());
+    }
 }

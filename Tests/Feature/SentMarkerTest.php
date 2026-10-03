@@ -397,7 +397,7 @@ class SentMarkerTest extends TestCase
         ]);
 
         $job = new SendReplyMessage($thread->id);
-        $job->tries = 1;
+        $job->transientRetries = $this->exhaustedTransientRetries();
         $job->handle();
 
         $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
@@ -483,7 +483,7 @@ class SentMarkerTest extends TestCase
         ]);
 
         $job = new SendReplyMessage($thread->id);
-        $job->tries = 1;
+        $job->transientRetries = $this->exhaustedTransientRetries();
         $job->handle();
 
         $thread = $thread->fresh();

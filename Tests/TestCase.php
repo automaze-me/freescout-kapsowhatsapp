@@ -140,4 +140,19 @@ abstract class TestCase extends CoreTestCase
     {
         return factory(\App\Mailbox::class)->create();
     }
+
+    /**
+     * The `transientRetries` value at which a send job's delayed-retry
+     * schedule is used up: its next transient failure is final.
+     */
+    protected function exhaustedTransientRetries(): int
+    {
+        $retry = 0;
+
+        while (\Modules\KapsoWhatsApp\Jobs\SendReplyMessage::transientRetryDelay($retry) !== null) {
+            $retry++;
+        }
+
+        return $retry;
+    }
 }

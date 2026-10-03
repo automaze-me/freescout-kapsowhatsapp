@@ -32,7 +32,7 @@ class ConversationResolver
             ->first();
 
         if ($open) {
-            $this->reactivate($open);
+            self::reactivate($open);
 
             return ['conversation' => $open, 'is_new' => false];
         }
@@ -64,19 +64,26 @@ class ConversationResolver
      * routed through the `conversation.status_changing` filter, and the
      * folder is only recomputed when the status actually changed. Not saved
      * here — the caller persists everything once, atomically, alongside the
-     * new thread.
+     * new thread. Also used by DeliveryFailureLineItem: a failed send puts
+     * the conversation back in front of the team the same way.
+     *
+     * Returns whether the status actually changed.
      */
-    protected function reactivate(Conversation $conversation)
+    public static function reactivate(Conversation $conversation)
     {
         if ($conversation->status == Conversation::STATUS_ACTIVE || $conversation->status == Conversation::STATUS_SPAM) {
-            return;
+            return false;
         }
 
         $oldStatus = $conversation->status;
         $conversation->status = \Eventy::filter('conversation.status_changing', Conversation::STATUS_ACTIVE, $conversation);
 
-        if ($conversation->status != $oldStatus) {
-            $conversation->updateFolder();
+        if ($conversation->status == $oldStatus) {
+            return false;
         }
+
+        $conversation->updateFolder();
+
+        return true;
     }
 }

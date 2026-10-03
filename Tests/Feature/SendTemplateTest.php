@@ -7,9 +7,11 @@ use App\Customer;
 use App\Folder;
 use App\Thread;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
@@ -274,12 +276,13 @@ class SendTemplateTest extends TestCase
             new Response(422, [], json_encode(['error' => 'Template not approved for this recipient'])),
         ]);
 
-        $job = new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']);
-        // Deterministic "final attempt" seam -- see SendReplyTest's identical
-        // use of this trick and its comment for why tries = 1 makes
-        // attempts() >= tries true on a direct handle() call.
-        $job->tries = 1;
-        $job->handle();
+        \Bus::fake();
+
+        // A rejection fails the same way on every retry, so it is final on
+        // the very first attempt -- no retry gets scheduled.
+        (new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']))->handle();
+
+        \Bus::assertNotDispatched(SendTemplateMessage::class);
 
         $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_TEMPLATE)->firstOrFail();
         $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
@@ -292,6 +295,58 @@ class SendTemplateTest extends TestCase
 
         $thread = $thread->fresh();
         $this->assertNull($thread->getMeta(KapsoMessage::THREAD_META_SENT_AT), 'a recorded failure must clear an existing sent marker');
+    }
+
+    /**
+     * Same delayed-retry schedule as SendReplyMessage (see
+     * SendReplyTest::test_an_unreachable_kapso_schedules_a_delayed_retry_instead_of_giving_up);
+     * the fresh run must carry the whole template send, not just the thread.
+     */
+    public function test_an_unreachable_kapso_schedules_a_delayed_retry_of_the_same_template()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $this->fakeResponses([
+            new ConnectException('cURL error 28: Resolving timed out after 5002 milliseconds', new Request('POST', 'x')),
+        ]);
+
+        \Bus::fake();
+
+        (new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']))->handle();
+
+        \Bus::assertDispatched(SendTemplateMessage::class, function ($job) use ($thread) {
+            return $job->threadId === $thread->id
+                && $job->templateName === 'order_shipped'
+                && $job->languageCode === 'en_US'
+                && $job->variables === ['John', '12345']
+                && $job->transientRetries === 1
+                && $job->delay === 60;
+        });
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_TEMPLATE)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_SENDING, $row->send_state);
+        $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count());
+    }
+
+    public function test_a_transient_failure_after_the_last_scheduled_retry_gives_up()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $this->fakeResponses([
+            new Response(503, [], json_encode(['error' => 'Kapso is down for maintenance'])),
+        ]);
+
+        \Bus::fake();
+
+        $job = new SendTemplateMessage($thread->id, 'order_shipped', 'en_US', ['John', '12345']);
+        $job->transientRetries = $this->exhaustedTransientRetries();
+        $job->handle();
+
+        \Bus::assertNotDispatched(SendTemplateMessage::class);
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_TEMPLATE)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
+        $this->assertSame(1, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count());
     }
 
     public function test_guards_bail_silently_on_an_undone_or_foreign_thread()

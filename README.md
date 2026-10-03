@@ -97,6 +97,11 @@ If the send itself is rejected at request time (Kapso's API declines it, rather 
 and reporting a failure later via webhook), the same red delivery-failure line item described below
 appears immediately — this is not only a webhook-driven outcome.
 
+If Kapso can't be reached at all (a network or DNS outage, a timeout, rate limiting or a server
+error on Kapso's side), the reply is not given up: the module tries again after 1, 5 and 15
+minutes, then hourly for up to a day, and only posts the red line item once those retries run out.
+Template sends are retried the same way.
+
 Attachment replies hand Kapso a link built from the install's own `APP_URL`, so an install that
 isn't reachable from the public internet will have every attachment reply rejected (surfaced the
 same way, as the red delivery-failure line item).
@@ -116,7 +121,9 @@ using Kapso's own inbox directly.
 - **A delivery failure** — the customer-service window has closed (WhatsApp only allows free-form
   replies within 24 hours of the customer's last message), the number is invalid, etc. — is posted
   as a red line item on the conversation with Kapso's error code and message, whether the send was
-  made from FreeScout or elsewhere, so a failed send is never silently invisible. This is posted
+  made from FreeScout or elsewhere, so a failed send is never silently invisible. A Pending or
+  Closed conversation goes back to Active at the same time (Spam stays Spam), so the failure shows
+  up in the Active queue instead of waiting for the customer to complain. This is posted
   whether or not the corresponding `sent` event has been processed yet: Kapso does not guarantee
   event ordering, so a failure can arrive before its sibling send, or the send event may never
   arrive at all for some error classes. Once a message is marked failed this way, a `sent` event

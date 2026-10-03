@@ -8,9 +8,11 @@ use App\Customer;
 use App\Folder;
 use App\Thread;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
@@ -483,12 +485,9 @@ class SendReplyTest extends TestCase
         ]);
 
         $job = new SendReplyMessage($thread->id);
-        // Deterministic "final attempt" seam: attempts() defaults to 1 when
-        // no real queue Job is attached (see InteractsWithQueue::attempts()),
-        // so tries = 1 makes `attempts() >= tries` true on the very first,
-        // direct call to handle() -- exactly the condition that must hold on
-        // a job's genuinely last retry.
-        $job->tries = 1;
+        // Deterministic "final attempt" seam: a 500 is transient, so the
+        // job only gives up once its delayed-retry schedule is used up.
+        $job->transientRetries = $this->exhaustedTransientRetries();
         $job->handle();
 
         $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
@@ -566,7 +565,7 @@ class SendReplyTest extends TestCase
         ]);
 
         $job1 = new SendReplyMessage($thread->id);
-        $job1->tries = 1;
+        $job1->transientRetries = $this->exhaustedTransientRetries();
         $job1->handle();
 
         $this->assertSame(0, KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->count());
@@ -603,34 +602,139 @@ class SendReplyTest extends TestCase
     }
 
     /**
-     * Not one of the sketches in the plan, but required by the task brief:
-     * a non-final attempt must rethrow so Laravel's queue retries the job,
-     * leaving the claimed-but-unsent part row alone (still `sending`) and
-     * creating no line item -- only the last attempt gets to give up.
+     * Seen in production: a DNS lookup timed out on the host, the old job
+     * burned all three attempts within seconds and the reply was lost. A
+     * transient failure must instead queue a fresh run of the job for
+     * later, leaving the claimed part `sending` for that run to pick up and
+     * posting no line item yet.
      */
-    public function test_a_non_final_attempt_rethrows_instead_of_giving_up()
+    public function test_an_unreachable_kapso_schedules_a_delayed_retry_instead_of_giving_up()
     {
         [$account, $conversation, $inbound, $thread] = $this->scenario();
 
         $this->fakeResponses([
-            new Response(500, [], json_encode(['error' => 'temporary hiccup'])),
+            new ConnectException('cURL error 28: Resolving timed out after 5002 milliseconds', new Request('POST', 'x')),
         ]);
 
-        $job = new SendReplyMessage($thread->id);
-        // Default $tries = 3; attempts() defaults to 1 with no queue Job
-        // attached, so 1 < 3 -- this is not the final attempt.
-        $this->expectException(\Modules\KapsoWhatsApp\Exceptions\KapsoApiException::class);
+        \Bus::fake();
 
-        try {
+        (new SendReplyMessage($thread->id))->handle();
+
+        \Bus::assertDispatched(SendReplyMessage::class, function ($job) use ($thread) {
+            return $job->threadId === $thread->id && $job->transientRetries === 1 && $job->delay === 60;
+        });
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->first();
+        $this->assertNotNull($row);
+        $this->assertSame(KapsoMessage::SEND_STATE_SENDING, $row->send_state,
+            'the claimed part must stay `sending` for the delayed run to pick up');
+        $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count(),
+            'no line item while a retry is still scheduled');
+    }
+
+    public function test_transient_retries_back_off_from_minutes_to_hourly()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        \Bus::fake();
+
+        foreach ([0 => 60, 1 => 300, 2 => 900, 3 => 3600, 10 => 3600] as $retriesSoFar => $expectedDelay) {
+            $this->fakeResponses([
+                new Response(503, [], json_encode(['error' => 'Kapso is down for maintenance'])),
+            ]);
+
+            $job = new SendReplyMessage($thread->id);
+            $job->transientRetries = $retriesSoFar;
             $job->handle();
-        } finally {
-            $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->first();
-            $this->assertNotNull($row);
-            $this->assertSame(KapsoMessage::SEND_STATE_SENDING, $row->send_state,
-                'a non-final attempt must leave the claimed part alone for the retry to pick up');
-            $this->assertSame(0, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count(),
-                'no line item until the retries are actually exhausted');
+
+            \Bus::assertDispatched(SendReplyMessage::class, function ($next) use ($retriesSoFar, $expectedDelay) {
+                return $next->transientRetries === $retriesSoFar + 1 && $next->delay === $expectedDelay;
+            });
         }
+    }
+
+    /**
+     * A free-form reply can only reach the customer inside WhatsApp's 24h
+     * window, so the whole schedule must fit into one day.
+     */
+    public function test_the_retry_schedule_ends_within_one_day()
+    {
+        $total = 0;
+
+        for ($retry = 0; ($delay = SendReplyMessage::transientRetryDelay($retry)) !== null; $retry++) {
+            $total += $delay;
+        }
+
+        $this->assertGreaterThan(23 * 3600, $total, 'hourly retries should cover most of the day');
+        $this->assertLessThan(24 * 3600, $total);
+    }
+
+    public function test_a_transient_failure_after_the_last_scheduled_retry_gives_up()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $this->fakeResponses([
+            new Response(503, [], json_encode(['error' => 'Kapso is down for maintenance'])),
+        ]);
+
+        \Bus::fake();
+
+        $job = new SendReplyMessage($thread->id);
+        $job->transientRetries = $this->exhaustedTransientRetries();
+        $job->handle();
+
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
+        $this->assertSame(1, Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->count());
+    }
+
+    /**
+     * A rejection (here Meta refusing the recipient) fails the same way on
+     * every retry, so it is reported on the first attempt instead of being
+     * retried.
+     */
+    /**
+     * The incident shape end to end: the agent sent the reply as Pending,
+     * so the conversation left the Active queue, and the failure must bring
+     * it back there.
+     */
+    public function test_a_failed_reply_puts_the_pending_conversation_back_to_active()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+        $conversation->status = Conversation::STATUS_PENDING;
+        $conversation->save();
+
+        $this->fakeResponses([
+            new Response(400, [], json_encode(['error' => ['message' => '(#131030) Recipient phone number not in allowed list', 'code' => 131030]])),
+        ]);
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        $this->assertSame(Conversation::STATUS_ACTIVE, (int) $conversation->fresh()->status);
+    }
+
+    public function test_a_rejection_gives_up_on_the_first_attempt()
+    {
+        [$account, $conversation, $inbound, $thread] = $this->scenario();
+
+        $this->fakeResponses([
+            new Response(400, [], json_encode(['error' => ['message' => '(#131030) Recipient phone number not in allowed list', 'code' => 131030]])),
+        ]);
+
+        \Bus::fake();
+
+        (new SendReplyMessage($thread->id))->handle();
+
+        \Bus::assertNotDispatched(SendReplyMessage::class);
+
+        $row = KapsoMessage::where('thread_id', $thread->id)->where('part_key', KapsoMessage::PART_BODY)->firstOrFail();
+        $this->assertSame(KapsoMessage::SEND_STATE_FAILED, $row->send_state);
+
+        $lineItems = Thread::where('conversation_id', $conversation->id)->where('type', Thread::TYPE_LINEITEM)->get();
+        $this->assertCount(1, $lineItems);
+        $this->assertStringContainsString('131030', $lineItems->first()->body);
     }
 
     /**

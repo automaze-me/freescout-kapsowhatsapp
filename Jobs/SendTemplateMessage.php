@@ -12,6 +12,7 @@ use Illuminate\Queue\SerializesModels;
 use Modules\KapsoWhatsApp\Entities\KapsoAccount;
 use Modules\KapsoWhatsApp\Entities\KapsoMessage;
 use Modules\KapsoWhatsApp\Exceptions\KapsoApiException;
+use Modules\KapsoWhatsApp\Jobs\Concerns\RetriesTransientFailures;
 use Modules\KapsoWhatsApp\Services\ChannelChoice;
 use Modules\KapsoWhatsApp\Services\DeliveryFailureLineItem;
 use Modules\KapsoWhatsApp\Services\KapsoClient;
@@ -37,7 +38,7 @@ use Modules\KapsoWhatsApp\Services\KapsoClient;
  */
 class SendTemplateMessage implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, RetriesTransientFailures;
 
     /**
      * Meta's own per-parameter text limit for a template component. The
@@ -106,15 +107,20 @@ class SendTemplateMessage implements ShouldQueue
         try {
             $this->claimAndSend($client, $account, $conversation, $thread, $address, $latestInbound);
         } catch (KapsoApiException $e) {
-            if ($this->attempts() < $this->tries) {
-                // Not the final attempt: rethrow so Laravel's queue retries
-                // the whole job. The claim row is left `sending` for the
-                // retry to re-claim.
-                throw $e;
+            // Same split as SendReplyMessage::handle(): a transient failure
+            // is retried later (the claim row stays `sending` for that run
+            // to re-claim); a rejection or a used-up schedule is final.
+            if ($e->isTransient() && $this->retryLater($e)) {
+                return;
             }
 
             $this->finalizeFailure($thread, $conversation, $e->getMessage());
         }
+    }
+
+    protected function freshRun()
+    {
+        return new static($this->threadId, $this->templateName, $this->languageCode, $this->variables);
     }
 
     /**
