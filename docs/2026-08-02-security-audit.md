@@ -29,7 +29,7 @@ Deliberately never-throw: verify (in middleware) → dedupe → dispatch. A queu
 
 ### SSRF on media download (`Services/KapsoClient.php::downloadMedia`)
 
-The media URL comes from the (HMAC-authenticated) payload, and the fetch carries the install's API key. Before any request, the URL must be `https` to a public, non-reserved host — enforced via core's `Helper::checkUrlIpAndHost()`, which rejects loopback, private, link-local, cloud-metadata addresses and the app's own host. Guarded with `method_exists()` for older core. Outbound links are always built from `APP_URL` and never pass through this method.
+The media URL comes from the (HMAC-authenticated) payload, and the fetch carries the install's API key. Before any request, the URL must be `https` to a public, non-reserved host — enforced via core's `Helper::checkUrlIpAndHost()`, which rejects loopback, private, link-local, cloud-metadata addresses and the app's own host. Guarded with `method_exists()` for older core. *Update 2026-10-28:* core 1.8.244 renamed the helper to `Helper::checkUrlHost()`, and the `method_exists()` guard silently skipped the host check on those cores (only the `https` requirement remained). The module now looks up both names (`KapsoClient::CORE_HOST_CHECKS`), and a unit test fails if neither exists. Outbound links are always built from `APP_URL` and never pass through this method.
 
 ### Injection & output encoding
 

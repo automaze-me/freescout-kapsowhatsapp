@@ -98,6 +98,22 @@ class KapsoClientTest extends TestCase
     }
 
     /**
+     * The media SSRF host check is core's, looked up by name. Core renamed
+     * it once already (checkUrlIpAndHost() became checkUrlHost() in
+     * 1.8.244), and the lookup missed it without a word, leaving only the
+     * https check in place. If this fails, core renamed it again.
+     */
+    public function test_the_core_url_host_check_exists_on_this_core()
+    {
+        $found = array_filter(KapsoClient::CORE_HOST_CHECKS, function ($method) {
+            return method_exists(\Helper::class, $method);
+        });
+
+        $this->assertNotEmpty($found,
+            'None of KapsoClient::CORE_HOST_CHECKS exists on \Helper: add the new name of core\'s URL host check');
+    }
+
+    /**
      * The single constructor argument form (no injected client) must keep
      * working exactly as before: a real Guzzle Client with a 30s timeout,
      * so a slow/unresponsive Kapso media host cannot hang the queue worker.

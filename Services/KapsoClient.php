@@ -21,6 +21,12 @@ class KapsoClient
     const NUMBERS_PER_PAGE = 100;
     const NUMBERS_PAGE_CAP = 10;
 
+    /**
+     * Core's SSRF host check under each name it has had, newest first:
+     * checkUrlIpAndHost() since 1.8.209, renamed checkUrlHost() in 1.8.244.
+     */
+    const CORE_HOST_CHECKS = ['checkUrlHost', 'checkUrlIpAndHost'];
+
     protected $account;
     protected $client;
 
@@ -129,11 +135,11 @@ class KapsoClient
      * The two checks downloadMedia() requires before it will fetch a URL:
      * exactly https (Kapso always serves media over TLS; http:// and any
      * non-http(s) scheme such as file:// or gopher:// is refused), and a
-     * public, non-reserved host per core's Helper::checkUrlIpAndHost(),
+     * public, non-reserved host per core's host check (CORE_HOST_CHECKS),
      * which rejects loopback/private/link-local/metadata addresses and the
-     * app's own host. Guarded with method_exists() so the module still runs
-     * -- with today's unguarded behaviour -- on a core version that
-     * predates the helper.
+     * app's own host. Looked up with method_exists() so the module still
+     * runs -- with only the https check -- on a core version that predates
+     * the helper.
      */
     protected static function isMediaUrlSafe($url)
     {
@@ -141,8 +147,10 @@ class KapsoClient
             return false;
         }
 
-        if (method_exists(\Helper::class, 'checkUrlIpAndHost') && !\Helper::checkUrlIpAndHost($url)) {
-            return false;
+        foreach (self::CORE_HOST_CHECKS as $check) {
+            if (method_exists(\Helper::class, $check)) {
+                return (bool) call_user_func([\Helper::class, $check], $url);
+            }
         }
 
         return true;
