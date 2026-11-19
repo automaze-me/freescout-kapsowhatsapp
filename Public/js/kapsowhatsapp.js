@@ -140,6 +140,35 @@ document.addEventListener('DOMContentLoaded', function () {
         hidden.value = checked.value;
     }
 
+    // Core 1.8.251 (#5799) adds an "Also send reply to customer by email"
+    // checkbox (.conv-chat-email, ticked by default) to the reply form of
+    // chat conversations. Wherever the picker is shown, the picker alone
+    // decides, so the checkbox is hidden and disabled: a disabled input is
+    // never serialized, and a form reset does not re-enable it.
+    // Listeners/RouteReplyChannel.php::dropCoreEmailCopy() drops core's
+    // flag on the server too, for a page where this script did not run.
+    // Without a picker the checkbox is left alone and works as core intends.
+    // Called here, above the early return further down.
+    function kwaRetireCoreEmailCheckbox() {
+        if (!document.querySelector('.kwa-channel-picker[data-kwa-picker="1"]')) {
+            return;
+        }
+
+        var row = document.querySelector('.form-reply .conv-chat-email');
+        if (!row) {
+            return;
+        }
+
+        row.classList.add('hidden');
+        var box = row.querySelector('input[name="chat_send_email"]');
+        if (box) {
+            box.checked = false;
+            box.disabled = true;
+        }
+    }
+
+    kwaRetireCoreEmailCheckbox();
+
     // Stage 3c: the "Send a template…" picker on the closed-window notice.
     // Guarded on the presence of data-kwa-templates-url itself, not the
     // `closed` flag above -- the same marker-driven style as the

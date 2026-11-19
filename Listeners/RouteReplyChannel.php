@@ -61,6 +61,10 @@ class RouteReplyChannel
      * on the copy must erase the value it inherited from the original
      * thread rather than silently keep it. Absence of meta afterwards means
      * "native": intercept() below then leaves core entirely untouched.
+     *
+     * Before any of that, core's own "Also send reply to customer by email"
+     * flag is dropped wherever the picker is shown -- see
+     * dropCoreEmailCopy().
      */
     public static function capture(Thread $thread, $request)
     {
@@ -68,11 +72,15 @@ class RouteReplyChannel
             return;
         }
 
+        $conversation = Conversation::find($thread->conversation_id);
+
+        if ($conversation && ChannelChoice::pickerAvailable($conversation)) {
+            self::dropCoreEmailCopy($thread);
+        }
+
         $value = $request->input('kwa_channel');
 
         if ($value === ChannelChoice::CHANNEL_WHATSAPP || $value === ChannelChoice::CHANNEL_EMAIL) {
-            $conversation = Conversation::find($thread->conversation_id);
-
             $available = $conversation && ($value === ChannelChoice::CHANNEL_WHATSAPP
                 ? ChannelChoice::whatsappAvailable($conversation)
                 : ChannelChoice::emailAvailable($conversation));
@@ -85,6 +93,35 @@ class RouteReplyChannel
         }
 
         $thread->setMeta(KapsoMessage::THREAD_META_CHANNEL, null);
+    }
+
+    /**
+     * Core 1.8.251 (#5799) adds an "Also send reply to customer by email"
+     * checkbox, ticked by default, to the reply form of every chat
+     * conversation whose customer has an email, and flags the thread
+     * (Thread::META_CHAT_SEND_EMAIL) right before firing
+     * thread.before_save_from_request. Core's SendReplyToCustomer listener
+     * then sends that email IN ADDITION to the chat_conversation.send_reply
+     * path whenever intercept() below leaves core alone -- i.e. on every
+     * native WhatsApp reply. With both controls at their defaults, the
+     * customer would get the reply by WhatsApp and by email.
+     *
+     * Wherever the picker is shown (ChannelChoice::pickerAvailable(), the
+     * same predicate the provider renders it on), the picker alone decides,
+     * so the flag is dropped here; Public/js/kapsowhatsapp.js hides and
+     * disables the checkbox on those pages. Where there is no picker, core's
+     * checkbox keeps working as core intends, rather than becoming a control
+     * that silently does nothing. Core saves the thread right after this
+     * hook, so its listener sees the flag already gone.
+     *
+     * Older cores have no such constant (and no checkbox): nothing to do.
+     * CoreChatEmailCheckboxTest carries a tripwire for a renamed constant.
+     */
+    protected static function dropCoreEmailCopy(Thread $thread)
+    {
+        if (defined(Thread::class.'::META_CHAT_SEND_EMAIL')) {
+            $thread->unsetMeta(Thread::META_CHAT_SEND_EMAIL);
+        }
     }
 
     /**

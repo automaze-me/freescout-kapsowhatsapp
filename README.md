@@ -187,6 +187,10 @@ the way a reply on that channel normally does — the same undo delay, the same 
 reporting, the same *Sent via WhatsApp* marker. The conversation's own channel never changes; the
 choice applies to that one reply only.
 
+FreeScout 1.8.251 and newer add their own **Also send reply to customer by email** checkbox to chat
+conversations. Wherever the picker is shown, the module hides that checkbox and the picker alone
+decides, so a WhatsApp reply is never also sent by email.
+
 ## Channel code
 
 This module registers communication channel **105**. Codes below 100 belong to official
